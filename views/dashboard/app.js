@@ -1217,7 +1217,8 @@
     setInlineText("clean-targets-status", "正在重新读取最近一次扫描结果…");
     hideBanner();
     try {
-      await loadCleanTab();
+      const data = await loadCleanTab();
+      if (!data) return;
       setInlineText(
         "clean-targets-status",
         "候选已更新 · " + new Date().toLocaleTimeString(),
@@ -1264,19 +1265,22 @@
     hideBanner();
     try {
       if (state.tab === "overview") await loadOverview();
-      else if (state.tab === "sessions") await loadSessions();
-      else if (state.tab === "preview") {
+      else if (state.tab === "sessions") {
+        const data = await loadSessions();
+        if (!data) return;
+      } else if (state.tab === "preview") {
         const preview = await loadPreview();
-        if (preview) {
-          setInlineText(
-            "preview-status",
-            "预览已刷新：候选 " + fmtNum(preview.summary.targets) +
-              " 个 · " + new Date().toLocaleTimeString(),
-            "success"
-          );
-        }
-      } else if (state.tab === "clean") await loadCleanTab();
-      else if (state.tab === "logs") await loadLogs();
+        if (!preview) return;
+        setInlineText(
+          "preview-status",
+          "预览已刷新：候选 " + fmtNum(preview.summary.targets) +
+            " 个 · " + new Date().toLocaleTimeString(),
+          "success"
+        );
+      } else if (state.tab === "clean") {
+        const data = await loadCleanTab();
+        if (!data) return;
+      } else if (state.tab === "logs") await loadLogs();
       else if (state.tab === "settings") await loadSettings();
       setInlineText(
         "global-status",
