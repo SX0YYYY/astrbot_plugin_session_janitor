@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <title>会话清道夫</title>
-  <link rel="stylesheet" href="./style.css?v=0.6.0" />
+  <link rel="stylesheet" href="./style.css?v=0.6.1" />
 </head>
 <body>
   <div class="page">
@@ -14,12 +14,12 @@
         <div class="logo" aria-hidden="true">清</div>
         <div class="brand-text">
           <h1>会话清道夫</h1>
-          <p id="subtitle">扫描 / 清理 / 回滚 · V0.6</p>
+          <p id="subtitle">扫描 / 清理 / 回滚 · V0.6.1</p>
         </div>
       </div>
       <div class="top-actions">
         <span class="inline-status" id="global-status"></span>
-        <span class="pill" id="version">v0.6.0</span>
+        <span class="pill" id="version">v0.6.1</span>
         <button id="scan-btn" class="primary" type="button"
           title="重新读取当前 QQ 群/好友列表并扫描核心库，更新所有标签页的数据。">开始扫描</button>
         <button id="refresh-btn" class="ghost" type="button"
@@ -237,18 +237,26 @@
       </section>
 
       <section class="panel" id="panel-settings" role="tabpanel">
-        <div class="card">
+        <div class="card settings-hero">
           <div class="card-head">
-            <h2>配置</h2>
+            <div>
+              <h2>插件设置</h2>
+              <p class="muted">保存后立即写入 AstrBot 插件配置；自动清理默认关闭。</p>
+            </div>
             <span class="pill soft">Web 保存</span>
           </div>
-          <div class="toolbar">
+          <div class="toolbar settings-actions">
             <button id="settings-save" class="primary" type="button">保存设置</button>
             <button id="settings-reload" class="ghost" type="button">重新读取</button>
             <span id="settings-status" class="inline-status"></span>
           </div>
-          <div id="automation-status" class="automation-box"></div>
-          <form id="settings-form" class="settings-form" autocomplete="off"></form>
+        </div>
+
+        <div id="automation-status" class="automation-card card"></div>
+
+        <form id="settings-form" class="settings-form" autocomplete="off"></form>
+
+        <div class="card settings-foot">
           <p class="panel-hint">
             自动清理只会处理「已退群」的默认可清理会话，不会自动清理已删好友或临时会话。
             默认不删 provider_stats；执行结果会写入扫描日志，并按通知配置发送摘要。
@@ -270,6 +278,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=0.6.0" defer></script>
+  <script src="./app.js?v=0.6.1" defer></script>
 </body>
 </html>

@@ -983,17 +983,36 @@
     });
   }
 
-  function settingsField(label, input, hint, check) {
-    const field = el("label", "settings-field" + (check ? " check-field" : ""));
-    if (check) {
-      field.appendChild(input);
-      field.appendChild(el("span", "", label));
-    } else {
-      field.appendChild(el("span", "", label));
-      field.appendChild(input);
+  function settingsField(label, input, hint, options) {
+    const opts = options || {};
+    if (opts.switch) {
+      const row = el("label", "settings-switch" + (opts.full ? " full" : ""));
+      const copy = el("div", "switch-copy");
+      copy.appendChild(el("strong", "", label));
+      if (hint) copy.appendChild(el("small", "", hint));
+      row.appendChild(copy);
+      row.appendChild(input);
+      return row;
     }
+    const field = el("label", "settings-field" + (opts.full ? " full" : ""));
+    field.appendChild(el("span", "settings-label", label));
+    field.appendChild(input);
     if (hint) field.appendChild(el("small", "field-hint", hint));
     return field;
+  }
+
+  function settingsSection(form, title, description) {
+    const section = el("section", "card settings-section");
+    const head = el("div", "settings-section-head");
+    const copy = el("div");
+    copy.appendChild(el("h3", "", title));
+    if (description) copy.appendChild(el("p", "", description));
+    head.appendChild(copy);
+    section.appendChild(head);
+    const grid = el("div", "settings-grid");
+    section.appendChild(grid);
+    form.appendChild(section);
+    return grid;
   }
 
   function textInput(name, value, placeholder) {
@@ -1042,65 +1061,93 @@
     const form = $("settings-form");
     form.replaceChildren();
     const config = data.config || {};
-    form.appendChild(settingsField(
+
+    const scanGrid = settingsSection(
+      form,
+      "扫描设置",
+      "控制平台列表读取、临时会话判定和备份策略。"
+    );
+    scanGrid.appendChild(settingsField(
       "平台实例 ID",
       textInput("platform_id", config.platform_id || "default", "default"),
       "aiocqhttp 默认 default；修改后下次扫描生效。"
     ));
-    form.appendChild(settingsField(
+    scanGrid.appendChild(settingsField(
       "临时会话阈值（天）",
       numberInput("temp_session_days", config.temp_session_days, 1, 365, 1),
       "好友列表外、超过该天数未活跃的会话视为过期临时会话。"
     ));
-    form.appendChild(settingsField(
+    scanGrid.appendChild(settingsField(
       "平台列表超时（秒）",
       numberInput("scan_timeout_seconds", config.scan_timeout_seconds, 3, 60, 1),
       "get_group_list / get_friend_list 的超时；超时即停止扫描。"
     ));
-    form.appendChild(settingsField(
+    scanGrid.appendChild(settingsField(
       "备份保留份数",
       numberInput("backup_retain", config.backup_retain, 1, 30, 1),
       "每次清理前生成备份，超过份数自动删除最旧的备份。"
     ));
-    form.appendChild(settingsField(
+
+    const scopeGrid = settingsSection(
+      form,
+      "清理范围",
+      "决定哪些核心库数据会被清理；插件数据一律不读取。"
+    );
+    scopeGrid.appendChild(settingsField(
+      "白名单",
+      textAreaInput("whitelist", config.whitelist, "每行一个 UMO、群号或 QQ"),
+      "命中的会话永不清理。支持完整 UMO、群号/QQ、GroupMessage:123。",
+      { full: true }
+    ));
+    scopeGrid.appendChild(settingsField(
       "预览默认包含 provider_stats",
       checkInput("include_provider_stats", config.include_provider_stats),
       "调用统计默认不清理；开启后预览默认计入。",
-      true
+      { switch: true, full: true }
     ));
-    form.appendChild(settingsField(
-      "白名单",
-      textAreaInput("whitelist", config.whitelist, "每行一个 UMO、群号或 QQ"),
-      "命中的会话永不清理。支持完整 UMO、群号/QQ、GroupMessage:123。"
-    ));
-    form.appendChild(settingsField(
+
+    const autoGrid = settingsSection(
+      form,
       "自动清理",
+      "定时扫描并清理已退群会话；默认关闭，不影响已删好友/临时会话。"
+    );
+    autoGrid.appendChild(settingsField(
+      "启用自动清理",
       checkInput("auto_clean_enabled", config.auto_clean_enabled),
-      "开启后按下面的间隔自动扫描并清理已退群会话；默认关闭。",
-      true
+      "开启后按下面的间隔自动扫描并清理已退群会话。",
+      { switch: true, full: true }
     ));
-    form.appendChild(settingsField(
-      "自动扫描间隔（分钟）",
-      numberInput("scan_interval_minutes", config.scan_interval_minutes, 0, 1440, 10),
-      "0 表示不自动执行；开启自动清理后建议 60–1440 分钟。"
-    ));
-    form.appendChild(settingsField(
+    autoGrid.appendChild(settingsField(
       "自动清理包含 provider_stats",
       checkInput("auto_clean_include_provider_stats", config.auto_clean_include_provider_stats),
       "默认关闭；打开后自动清理会连调用统计一起删。",
-      true
+      { switch: true, full: true }
     ));
-    form.appendChild(settingsField(
+    autoGrid.appendChild(settingsField(
+      "自动扫描间隔（分钟）",
+      numberInput("scan_interval_minutes", config.scan_interval_minutes, 0, 1440, 10),
+      "0 表示不自动执行；开启自动清理后建议 60–1440 分钟。",
+      { full: true }
+    ));
+
+    const notifyGrid = settingsSection(
+      form,
       "执行后通知",
+      "自动清理删除数据后发送摘要；通知失败不影响清理。"
+    );
+    notifyGrid.appendChild(settingsField(
+      "启用通知",
       checkInput("notify_enabled", config.notify_enabled),
-      "自动清理删除数据后发送摘要；通知失败不影响清理。",
-      true
+      "删除数据后发送摘要；通知失败只记日志。",
+      { switch: true, full: true }
     ));
-    form.appendChild(settingsField(
+    notifyGrid.appendChild(settingsField(
       "通知目标",
       textAreaInput("notify_targets", config.notify_targets, "每行一个群聊或私聊 UMO"),
-      "留空时发送给 AstrBot admins_id 里的数字管理员 QQ。"
+      "留空时发送给 AstrBot admins_id 里的数字管理员 QQ。",
+      { full: true }
     ));
+
     warningList($("settings-notes"), data.notes);
     await loadAutomationStatus();
   }
@@ -1108,46 +1155,73 @@
   async function loadAutomationStatus() {
     const box = $("automation-status");
     if (!box) return;
+    box.replaceChildren(el("p", "muted", "正在读取自动清理状态…"));
     try {
       const data = await apiGet("automation_status");
       if (!data.ok) {
-        box.replaceChildren(el("p", "muted", data.error || "读取自动清理状态失败"));
+        box.replaceChildren(el("p", "error-text", data.error || "读取自动清理状态失败"));
         return;
       }
       const status = data.status || {};
       box.replaceChildren();
-      box.appendChild(infoRow(
-        "自动清理",
+      const head = el("div", "card-head");
+      const copy = el("div");
+      copy.appendChild(el("h2", "", "自动清理状态"));
+      copy.appendChild(el("p", "muted", "只处理已退群会话；默认不含 provider_stats。"));
+      head.appendChild(copy);
+      head.appendChild(el(
+        "span",
+        "pill " + (status.enabled ? "pill-on" : "pill-off"),
         status.enabled ? "已开启" : "已关闭"
       ));
-      box.appendChild(infoRow(
+      box.appendChild(head);
+
+      const grid = el("div", "automation-grid");
+      grid.appendChild(automationItem(
         "扫描间隔",
-        status.interval_minutes > 0 ? "每 " + fmtNum(status.interval_minutes) + " 分钟" : "未设置（不会自动执行）"
+        status.interval_minutes > 0 ? "每 " + fmtNum(status.interval_minutes) + " 分钟" : "未设置"
       ));
-      box.appendChild(infoRow(
+      grid.appendChild(automationItem(
         "下次运行",
         status.next_run ? fmtTime(status.next_run) : "--"
       ));
-      box.appendChild(infoRow(
+      grid.appendChild(automationItem(
         "上次运行",
         status.last_run ? fmtTime(status.last_run) : "尚未运行"
       ));
       let lastText = "--";
+      let lastKind = "";
       const last = status.last_result;
       if (last) {
-        if (last.ok && last.skipped) lastText = "无候选，已跳过";
-        else if (last.ok) lastText = "删除 " + fmtNum((last.result || {}).deleted) + " 行";
-        else lastText = last.error || "失败";
+        if (last.ok && last.skipped) {
+          lastText = "无候选，已跳过";
+          lastKind = "ok";
+        } else if (last.ok) {
+          lastText = "删除 " + fmtNum((last.result || {}).deleted) + " 行";
+          lastKind = "ok";
+        } else {
+          lastText = last.error || "失败";
+          lastKind = "bad";
+        }
       }
-      box.appendChild(infoRow("上次结果", lastText));
-      box.appendChild(infoRow(
-        "自动清理范围",
-        "只处理已退群会话；不动已删好友/临时会话；" +
-          (status.include_provider_stats ? "包含 provider_stats" : "不含 provider_stats")
+      grid.appendChild(automationItem("上次结果", lastText, lastKind));
+      box.appendChild(grid);
+      box.appendChild(el(
+        "p",
+        "automation-foot",
+        "范围：只处理已退群会话；不动已删好友/临时会话；" +
+          (status.include_provider_stats ? "包含 provider_stats。" : "不含 provider_stats。")
       ));
     } catch (error) {
       box.replaceChildren(el("p", "error-text", error && error.message ? error.message : String(error)));
     }
+  }
+
+  function automationItem(label, value, kind) {
+    const item = el("div", "automation-item");
+    item.appendChild(el("span", "", label));
+    item.appendChild(el("strong", kind ? "automation-" + kind : "", value));
+    return item;
   }
 
   async function saveSettings() {
