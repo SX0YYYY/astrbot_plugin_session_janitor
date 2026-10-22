@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+dist/
+*.zip
+*.log
+scan_result.json
+scan_log.jsonl
+backups/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <title>会话清道夫</title>
+  <link rel="stylesheet" href="./style.css?v=0.5.0" />
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">清</div>
+        <div class="brand-text">
+          <h1>会话清道夫</h1>
+          <p id="subtitle">扫描 / 清理 / 回滚 · V0.5</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="inline-status" id="global-status"></span>
+        <span class="pill" id="version">v0.5.0</span>
+        <button id="scan-btn" class="primary" type="button"
+          title="重新读取当前 QQ 群/好友列表并扫描核心库，更新所有标签页的数据。">开始扫描</button>
+        <button id="refresh-btn" class="ghost" type="button"
+          title="刷新当前页：重新读取最近一次扫描结果并重画当前标签页，不会重新扫描群/好友列表。">刷新当前页</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden" role="status"></div>
+
+    <nav class="tabs" role="tablist" aria-label="会话清道夫标签">
+      <button class="tab active" data-tab="overview" role="tab" aria-selected="true">概览</button>
+      <button class="tab" data-tab="sessions" role="tab" aria-selected="false">会话列表</button>
+      <button class="tab" data-tab="preview" role="tab" aria-selected="false">清理预览</button>
+      <button class="tab" data-tab="clean" role="tab" aria-selected="false">执行清理</button>
+      <button class="tab" data-tab="logs" role="tab" aria-selected="false">扫描日志</button>
+      <button class="tab" data-tab="settings" role="tab" aria-selected="false">设置</button>
+    </nav>
+
+    <main>
+      <section class="panel active" id="panel-overview" role="tabpanel">
+        <div class="metric-grid" id="metrics"></div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-head">
+              <h2>当前平台</h2>
+              <span class="muted" id="platform-captured">--</span>
+            </div>
+            <div id="platform-info" class="info-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>残留分布</h2>
+              <span class="muted">按数据表</span>
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr><th>数据表</th><th>总行数</th><th>候选残留</th><th>备注</th></tr>
+                </thead>
+                <tbody id="table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>操作说明</h2><span class="muted">每个按钮做什么</span></div>
+          <div class="help-list">
+            <div class="help-item"><strong>开始扫描</strong><span>重新读取当前 QQ 群/好友列表，再扫描核心库，更新所有标签页的数据。</span></div>
+            <div class="help-item"><strong>刷新当前页</strong><span>只重新读取最近一次扫描结果并重画当前页，速度快，不会重新扫描群/好友列表。</span></div>
+            <div class="help-item"><strong>清理预览</strong><span>只看“如果清理会处理什么”，不会删除。重新生成只按 provider_stats 开关重新计算预览。</span></div>
+            <div class="help-item"><strong>执行清理</strong><span>真实删除核心库数据；执行前自动生成整库快照和逐行备份，可在下方回滚。</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>扫描提示</h2></div>
+          <div id="overview-warnings" class="warnings"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-sessions" role="tabpanel">
+        <div class="card">
+          <div class="card-head">
+            <h2>会话列表</h2>
+            <span class="muted" id="sessions-summary">--</span>
+          </div>
+          <div class="filters">
+            <select id="filter-status" aria-label="按状态筛选">
+              <option value="">全部状态</option>
+              <option value="orphan_group">已退群</option>
+              <option value="expired_temp">过期临时会话</option>
+              <option value="missing_friend">好友列表外</option>
+              <option value="active">活跃</option>
+              <option value="whitelisted">白名单</option>
+            </select>
+            <select id="filter-type" aria-label="按类型筛选">
+              <option value="">全部类型</option>
+              <option value="group">群聊</option>
+              <option value="friend">好友/私聊</option>
+            </select>
+            <input id="filter-q" type="search" placeholder="搜索名称、UMO、群号/QQ" aria-label="搜索会话" />
+            <button id="filter-btn" class="ghost" type="button"
+              title="按当前条件过滤最近一次扫描结果，不会重新扫描。">筛选</button>
+            <span id="filter-feedback" class="inline-status"></span>
+          </div>
+          <p class="panel-hint">
+            筛选只过滤最近一次扫描结果，不会重新扫描。临时会话 = 不在当前好友列表里的私聊；
+            超过 30 天未活跃视为过期。历史数据无法区分已删好友和临时会话，所以默认不勾选。
+          </p>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>状态</th>
+                  <th>类型</th>
+                  <th>名称</th>
+                  <th>群号/QQ</th>
+                  <th>最后活跃</th>
+                  <th title="这个会话在核心库里匹配到的数据库行数，不是聊天消息条数。">候选行数</th>
+                  <th>说明</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="sessions-body"></tbody>
+            </table>
+          </div>
+          <p class="empty hidden" id="sessions-empty">没有符合条件的会话。</p>
+          <p class="panel-hint">“候选行数”是核心库匹配到的数据库行数（别名、偏好、调用统计等），不是聊天消息条数。</p>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-preview" role="tabpanel">
+        <div class="card">
+          <div class="card-head">
+            <h2>清理预览</h2>
+            <div class="preview-actions">
+              <label class="check" title="provider_stats 是模型调用用量统计，删了只丢历史用量，不影响聊天记录和机器人运行。">
+                <input type="checkbox" id="include-provider-stats" />
+                包含 provider_stats（调用统计）
+              </label>
+              <button id="preview-btn" class="ghost" type="button"
+                title="按当前 provider_stats 开关重新计算预览，不会删除数据，也不会重新扫描。">重新生成预览</button>
+              <span id="preview-status" class="inline-status"></span>
+            </div>
+          </div>
+          <div class="banner info" id="preview-note">
+            预览只读：这里只展示“如果清理会处理什么”，不会删除任何数据。
+          </div>
+          <p class="panel-hint">
+            <strong>provider_stats（调用统计）</strong>：AstrBot 每次调用模型时记下的用量流水，
+            比如哪个会话用了哪个模型、多少 token、耗时多久。删掉只会丢历史用量统计，
+            不影响聊天记录、偏好设置或机器人运行。默认不删。
+          </p>
+          <div class="metric-grid compact" id="preview-metrics"></div>
+          <div id="preview-groups"></div>
+          <div class="card inset">
+            <div class="card-head"><h3>按数据表汇总</h3></div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr><th>数据表</th><th>条件</th><th>将处理行数</th><th>备注</th></tr></thead>
+                <tbody id="preview-actions-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div id="preview-warnings" class="warnings"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-clean" role="tabpanel">
+        <div class="card">
+          <div class="card-head">
+            <h2>执行清理</h2>
+            <span class="pill soft">V0.4</span>
+          </div>
+          <div class="banner error">
+            这里会真实删除 AstrBot 核心库中的残留数据。执行前会自动生成整库快照和逐行备份；
+            请先确认候选，再输入「确认删除」四个字。
+          </div>
+          <p class="panel-hint">
+            <strong>provider_stats（调用统计）</strong>：模型调用用量流水。删掉只丢历史用量，
+            不影响聊天记录、偏好或机器人运行；默认不删。只剩这一项的会话会默认隐藏。
+          </p>
+          <div class="toolbar">
+            <label class="check" title="勾选后会一并删除模型调用用量统计。">
+              <input type="checkbox" id="clean-include-provider-stats" />
+              包含 provider_stats（调用统计）
+            </label>
+            <label class="check" title="默认隐藏只剩余调用统计的会话；勾选后显示。">
+              <input type="checkbox" id="show-provider-only" />
+              显示仅剩调用统计的条目
+            </label>
+            <button id="clean-refresh" class="ghost" type="button">重新读取候选</button>
+            <span id="clean-targets-status" class="inline-status"></span>
+          </div>
+          <p id="provider-only-note" class="detail-note"></p>
+          <div id="clean-targets" class="candidate-list"></div>
+          <div class="clean-confirm">
+            <label>确认词 <input id="clean-confirm" type="text" placeholder="输入“确认删除”" autocomplete="off" /></label>
+            <button id="clean-btn" class="danger" type="button">执行清理</button>
+          </div>
+          <div class="inline-status" id="clean-status"></div>
+          <div class="inline-status error-text" id="clean-error"></div>
+          <div class="progress-box hidden" id="clean-progress">
+            <div class="progress-head">
+              <strong id="clean-progress-stage">准备中</strong>
+              <span id="clean-progress-percent">0%</span>
+            </div>
+            <div class="progress-bar"><span id="clean-progress-bar"></span></div>
+            <div class="muted" id="clean-progress-message"></div>
+          </div>
+          <div id="clean-result" class="warnings"></div>
+          <div class="card inset">
+            <div class="card-head">
+              <h3>备份与回滚</h3>
+              <span id="backups-status" class="inline-status"></span>
+              <button id="backups-refresh" class="ghost" type="button">刷新备份列表</button>
+            </div>
+            <div id="backups-list" class="backup-list"></div>
+            <div class="clean-confirm">
+              <label>回滚确认词 <input id="rollback-confirm" type="text" placeholder="输入 RESTORE" autocomplete="off" /></label>
+            </div>
+            <div class="inline-status" id="rollback-status"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-logs" role="tabpanel">
+        <div class="card">
+          <div class="card-head">
+            <h2>扫描日志</h2>
+            <span class="muted">最近 50 条</span>
+          </div>
+          <div id="logs-list" class="log-list"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-settings" role="tabpanel">
+        <div class="card">
+          <div class="card-head">
+            <h2>配置</h2>
+            <span class="pill soft">Web 保存</span>
+          </div>
+          <div class="toolbar">
+            <button id="settings-save" class="primary" type="button">保存设置</button>
+            <button id="settings-reload" class="ghost" type="button">重新读取</button>
+            <span id="settings-status" class="inline-status"></span>
+          </div>
+          <form id="settings-form" class="settings-form" autocomplete="off"></form>
+          <div id="settings-notes" class="warnings"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="detail-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+    <div class="modal-backdrop" data-close="detail"></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="detail-title">会话详情</h2>
+        <button id="detail-close" class="ghost" type="button">关闭</button>
+      </div>
+      <div id="detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="./app.js?v=0.5.0" defer></script>
+</body>
+</html>

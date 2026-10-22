@@ -1,0 +1,108 @@
+{
+  "scan": {
+    "description": "扫描设置",
+    "type": "object",
+    "hint": "扫描阶段只读；默认参数适用于大多数情况。",
+    "items": {
+      "platform_id": {
+        "description": "平台实例 ID",
+        "type": "string",
+        "default": "default",
+        "hint": "AstrBot 平台配置里的 ID；aiocqhttp 默认是 default。"
+      },
+      "temp_session_days": {
+        "description": "临时会话阈值（天）",
+        "type": "int",
+        "default": 30,
+        "slider": {
+          "min": 1,
+          "max": 365,
+          "step": 1
+        },
+        "hint": "好友列表之外、最后活跃超过该天数的 FriendMessage 视为过期临时会话。"
+      },
+      "include_provider_stats": {
+        "description": "预览时包含 provider_stats",
+        "type": "bool",
+        "default": false,
+        "hint": "provider_stats 是调用统计历史，删除会丢失旧群用量；默认不计入预览。"
+      },
+      "whitelist": {
+        "description": "白名单",
+        "type": "list",
+        "default": [],
+        "hint": "填写完整 UMO（default:GroupMessage:123）、群号/QQ 或 GroupMessage:123；命中的会话永不清理。"
+      },
+      "scan_timeout_seconds": {
+        "description": "平台列表超时（秒）",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 3,
+          "max": 60,
+          "step": 1
+        },
+        "hint": "get_group_list / get_friend_list 的超时时间；超时或空列表会立即停止扫描。"
+      }
+    }
+  },
+  "automation": {
+    "description": "自动清理（预留）",
+    "type": "object",
+    "hint": "当前版本不执行自动清理；以下开关先保留，默认关闭。",
+    "items": {
+      "auto_clean_enabled": {
+        "description": "启用自动清理",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭；V0.4 接入自动清理后才会生效。"
+      },
+      "scan_interval_minutes": {
+        "description": "自动扫描间隔（分钟）",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 1440,
+          "step": 10
+        },
+        "hint": "0 表示只手动扫描；自动清理启用后按该间隔执行扫描。"
+      }
+    }
+  },
+  "notify": {
+    "description": "执行通知（预留）",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "自动清理后发送通知",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启；后续版本接入通知发送后生效。"
+      },
+      "targets": {
+        "description": "通知目标 UMO",
+        "type": "list",
+        "default": [],
+        "hint": "留空表示管理员私聊；可填写群聊 UMO。"
+      }
+    }
+  },
+  "backup": {
+    "description": "备份设置",
+    "type": "object",
+    "items": {
+      "retain": {
+        "description": "备份保留份数",
+        "type": "int",
+        "default": 5,
+        "slider": {
+          "min": 1,
+          "max": 30,
+          "step": 1
+        },
+        "hint": "执行删除前会先备份；超过份数时清理最旧备份。"
+      }
+    }
+  }
+}
