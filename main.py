@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - 旧版本兜底
     get_astrbot_data_path = None
 
 from .constants import DISPLAY_NAME, PLUGIN_NAME, PLUGIN_VERSION
+from .core.automation import AutoCleaner
 from .core.backup import BackupStore
 from .core.store import ScanStore
 from .page_api import PageApi
@@ -40,8 +41,14 @@ class SessionJanitorPlugin(Star):
         self.db_path = self._resolve_db_path()
         self.page_api = PageApi(self)
         self.page_api.register()
+        self.automation = AutoCleaner(self, self.page_api)
+        self.automation.start()
         if not self.db_path.is_file():
             logger.warning("会话清道夫未找到 AstrBot 主库：%s", self.db_path)
+
+    async def terminate(self) -> None:
+        if getattr(self, "automation", None) is not None:
+            await self.automation.stop()
 
     def _resolve_db_path(self) -> Path:
         if get_astrbot_data_path is not None:

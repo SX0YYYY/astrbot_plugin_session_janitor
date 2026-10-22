@@ -47,15 +47,15 @@
     }
   },
   "automation": {
-    "description": "自动清理（预留）",
+    "description": "自动清理",
     "type": "object",
-    "hint": "当前版本不执行自动清理；以下开关先保留，默认关闭。",
+    "hint": "默认关闭；开启后按间隔扫描，只清理已退群会话，不动已删好友/临时会话。",
     "items": {
       "auto_clean_enabled": {
         "description": "启用自动清理",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭；V0.4 接入自动清理后才会生效。"
+        "hint": "默认关闭；开启后按扫描间隔自动执行。"
       },
       "scan_interval_minutes": {
         "description": "自动扫描间隔（分钟）",
@@ -67,18 +67,24 @@
           "step": 10
         },
         "hint": "0 表示只手动扫描；自动清理启用后按该间隔执行扫描。"
+      },
+      "include_provider_stats": {
+        "description": "自动清理也删除 provider_stats",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭；打开后自动清理会连调用统计一起删。只处理已退群会话。"
       }
     }
   },
   "notify": {
-    "description": "执行通知（预留）",
+    "description": "执行通知",
     "type": "object",
     "items": {
       "enabled": {
         "description": "自动清理后发送通知",
         "type": "bool",
         "default": true,
-        "hint": "默认开启；后续版本接入通知发送后生效。"
+        "hint": "默认开启；自动清理删除数据后发送摘要，通知失败不影响清理。"
       },
       "targets": {
         "description": "通知目标 UMO",

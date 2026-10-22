@@ -1074,15 +1074,21 @@
       "命中的会话永不清理。支持完整 UMO、群号/QQ、GroupMessage:123。"
     ));
     form.appendChild(settingsField(
-      "自动清理（预留）",
+      "自动清理",
       checkInput("auto_clean_enabled", config.auto_clean_enabled),
-      "当前版本不会自动执行；保存后仅记录配置。",
+      "开启后按下面的间隔自动扫描并清理已退群会话；默认关闭。",
       true
     ));
     form.appendChild(settingsField(
-      "自动扫描间隔（分钟，预留）",
+      "自动扫描间隔（分钟）",
       numberInput("scan_interval_minutes", config.scan_interval_minutes, 0, 1440, 10),
-      "0 表示只手动扫描；自动清理尚未实现。"
+      "0 表示不自动执行；开启自动清理后建议 60–1440 分钟。"
+    ));
+    form.appendChild(settingsField(
+      "自动清理包含 provider_stats",
+      checkInput("auto_clean_include_provider_stats", config.auto_clean_include_provider_stats),
+      "默认关闭；打开后自动清理会连调用统计一起删。",
+      true
     ));
     form.appendChild(settingsField(
       "执行后通知（预留）",
@@ -1096,6 +1102,52 @@
       "留空表示管理员私聊；当前不会发送。"
     ));
     warningList($("settings-notes"), data.notes);
+    await loadAutomationStatus();
+  }
+
+  async function loadAutomationStatus() {
+    const box = $("automation-status");
+    if (!box) return;
+    try {
+      const data = await apiGet("automation_status");
+      if (!data.ok) {
+        box.replaceChildren(el("p", "muted", data.error || "读取自动清理状态失败"));
+        return;
+      }
+      const status = data.status || {};
+      box.replaceChildren();
+      box.appendChild(infoRow(
+        "自动清理",
+        status.enabled ? "已开启" : "已关闭"
+      ));
+      box.appendChild(infoRow(
+        "扫描间隔",
+        status.interval_minutes > 0 ? "每 " + fmtNum(status.interval_minutes) + " 分钟" : "未设置（不会自动执行）"
+      ));
+      box.appendChild(infoRow(
+        "下次运行",
+        status.next_run ? fmtTime(status.next_run) : "--"
+      ));
+      box.appendChild(infoRow(
+        "上次运行",
+        status.last_run ? fmtTime(status.last_run) : "尚未运行"
+      ));
+      let lastText = "--";
+      const last = status.last_result;
+      if (last) {
+        if (last.ok && last.skipped) lastText = "无候选，已跳过";
+        else if (last.ok) lastText = "删除 " + fmtNum((last.result || {}).deleted) + " 行";
+        else lastText = last.error || "失败";
+      }
+      box.appendChild(infoRow("上次结果", lastText));
+      box.appendChild(infoRow(
+        "自动清理范围",
+        "只处理已退群会话；不动已删好友/临时会话；" +
+          (status.include_provider_stats ? "包含 provider_stats" : "不含 provider_stats")
+      ));
+    } catch (error) {
+      box.replaceChildren(el("p", "error-text", error && error.message ? error.message : String(error)));
+    }
   }
 
   async function saveSettings() {
@@ -1127,6 +1179,7 @@
         whitelist: list("whitelist"),
         auto_clean_enabled: checked("auto_clean_enabled"),
         scan_interval_minutes: Number(read("scan_interval_minutes")),
+        auto_clean_include_provider_stats: checked("auto_clean_include_provider_stats"),
         notify_enabled: checked("notify_enabled"),
         notify_targets: list("notify_targets"),
       });

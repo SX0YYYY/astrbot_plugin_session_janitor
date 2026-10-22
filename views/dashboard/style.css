@@ -477,6 +477,16 @@ button.danger {
   margin-bottom: 3px;
 }
 
+.automation-box {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin: 4px 0 14px;
+  background: var(--bg);
+}
+.automation-box .info-row { font-size: 12px; padding: 5px 0; }
+.automation-box .info-value { text-align: left; }
+
 /* 设置表单 */
 .settings-form {
   display: grid;

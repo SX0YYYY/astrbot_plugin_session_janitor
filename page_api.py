@@ -18,6 +18,13 @@ except Exception:  # 兼容极旧版本；页面会提示 API 不可用
     _json_response = None
     _request = None
 
+try:
+    from astrbot.core.message.components import Plain
+    from astrbot.core.message.message_event_result import MessageChain
+except Exception:  # 通知是可选项，缺少消息组件时只写日志
+    Plain = None
+    MessageChain = None
+
 from .constants import PLUGIN_NAME
 from .core.cleaner import CoreCleaner
 from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list
@@ -82,6 +89,7 @@ class PageApi:
             ("logs", self.logs, ["GET"], "扫描日志"),
             ("settings", self.settings, ["GET"], "当前配置"),
             ("settings_save", self.settings_save, ["POST"], "保存配置"),
+            ("automation_status", self.automation_status, ["GET"], "自动清理状态"),
         )
         for route, handler, methods, desc in routes:
             register(f"/{PLUGIN_NAME}/{route}", handler, methods, desc)
@@ -248,7 +256,8 @@ class PageApi:
                     "本页保存后立即写入 AstrBot 插件配置，下次扫描/预览使用新配置。",
                     "会话清道夫只清理 AstrBot 核心库的数据，不读取也不修改任何插件数据。",
                     "已退群默认勾选；已删好友 / 过期临时会话默认不勾选，需要手动选择。",
-                    "自动清理、自动扫描、执行后通知为后续版本预留，当前保存也不会执行。",
+                    "自动清理只处理「已退群」的默认可清理会话；已删好友/临时会话不会自动清。",
+                    "自动清理默认关闭；开启后按间隔执行，执行结果会写入扫描日志并按通知配置发送。",
                 ],
             }
         )
@@ -271,6 +280,10 @@ class PageApi:
         except Exception as exc:
             logger.exception("会话清道夫保存配置失败")
             return jsonify({"ok": False, "error": f"保存配置失败：{exc}"})
+        automation = getattr(self.plugin, "automation", None)
+        refresh = getattr(automation, "refresh", None)
+        if callable(refresh):
+            refresh()
         self.store.append_log(
             {
                 "event": "settings",
@@ -286,6 +299,19 @@ class PageApi:
                 "config": self._config_view(),
             }
         )
+
+    async def automation_status(self) -> Any:
+        automation = getattr(self.plugin, "automation", None)
+        status = automation.status() if automation is not None else {
+            "enabled": False,
+            "interval_minutes": 0,
+            "include_provider_stats": False,
+            "running": False,
+            "last_run": None,
+            "next_run": None,
+            "last_result": None,
+        }
+        return jsonify({"ok": True, "status": status})
 
     # ------------------------------------------------------------------
     # POST
@@ -421,6 +447,183 @@ class PageApi:
             return "没有选择任何会话"
         return None
 
+    async def run_auto_clean(self) -> dict[str, Any]:
+        """按自动清理规则执行一次：只处理已退群会话。"""
+        config = self.plugin.config or {}
+        include_provider_stats = cfg_bool(
+            config, "automation.include_provider_stats", False
+        )
+        async with self._scan_lock:
+            try:
+                scan = await self._perform_scan()
+            except Exception as exc:
+                message = f"自动清理扫描失败：{exc}"
+                logger.warning(message)
+                self.store.append_log(
+                    {"event": "auto_clean", "ok": False, "error": message}
+                )
+                return {"ok": False, "error": message}
+            self.store.save(scan)
+
+            selected: list[str] = []
+            for item in scan.get("targets") or []:
+                if not item.get("selectable"):
+                    continue
+                if item.get("status") != "orphan_group":
+                    continue
+                counts = item.get("counts") or {}
+                provider_rows = int(counts.get("provider_stats") or 0)
+                core_rows = sum(
+                    int(value or 0)
+                    for table, value in counts.items()
+                    if table != "provider_stats"
+                )
+                if core_rows > 0 or (include_provider_stats and provider_rows > 0):
+                    selected.append(str(item.get("umo")))
+
+            if not selected:
+                result = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "没有可自动清理的已退群会话",
+                    "candidates": int((scan.get("summary") or {}).get("candidates") or 0),
+                    "deleted": 0,
+                }
+                self.store.append_log(
+                    {
+                        "event": "auto_clean",
+                        "ok": True,
+                        "skipped": True,
+                        "candidates": result["candidates"],
+                        "deleted": 0,
+                    }
+                )
+                return result
+
+            payload = await self._execute_clean(
+                {
+                    "targets": selected,
+                    "confirm": "确认删除",
+                    "include_provider_stats": include_provider_stats,
+                },
+                prefetched_scan=scan,
+            )
+            if not payload.get("ok"):
+                message = str(payload.get("error") or "自动清理失败")
+                self.store.append_log(
+                    {"event": "auto_clean", "ok": False, "error": message}
+                )
+                return {"ok": False, "error": message}
+
+            result = payload.get("result") or {}
+            notify = await self._notify_auto_clean(result)
+            self.store.append_log(
+                {
+                    "event": "auto_clean",
+                    "ok": True,
+                    "targets": len(selected),
+                    "backup_id": result.get("backup_id"),
+                    "deleted": result.get("deleted"),
+                    "counts": result.get("counts"),
+                    "notify": notify,
+                }
+            )
+            return {
+                "ok": True,
+                "skipped": False,
+                "targets": len(selected),
+                "result": result,
+                "notify": notify,
+                "warning": payload.get("warning"),
+            }
+
+    async def _notify_auto_clean(self, result: dict[str, Any]) -> dict[str, Any]:
+        if not int(result.get("deleted") or 0):
+            return {"sent": 0, "failed": 0, "reason": "没有删除数据"}
+        config = self.plugin.config or {}
+        if not cfg_bool(config, "notify.enabled", True):
+            return {"sent": 0, "failed": 0, "reason": "通知已关闭"}
+        if MessageChain is None or Plain is None:
+            return {"sent": 0, "failed": 0, "reason": "当前 AstrBot 不支持消息链"}
+        platform_id = str(cfg_get(config, "scan.platform_id", "default") or "default")
+        targets = cfg_list(config, "notify.targets", [])
+        if not targets:
+            targets = self._default_admin_targets()
+        if not targets:
+            return {
+                "sent": 0,
+                "failed": 0,
+                "reason": "没有通知目标（未配置 notify.targets，也没有数字管理员 QQ）",
+            }
+        text = self._format_auto_clean_message(result)
+        sent = 0
+        failed = 0
+        errors: list[str] = []
+        for target in targets:
+            umo = self._normalize_notify_target(str(target), platform_id)
+            if not umo:
+                continue
+            try:
+                found = await self.plugin.context.send_message(
+                    umo, MessageChain([Plain(text)])
+                )
+                if found is False:
+                    failed += 1
+                    errors.append(f"{umo}：未找到平台")
+                else:
+                    sent += 1
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{umo}：{exc}")
+        if errors:
+            logger.warning("会话清道夫自动清理通知失败：%s", "；".join(errors[:5]))
+        return {
+            "sent": sent,
+            "failed": failed,
+            "targets": targets,
+            "errors": errors[:5],
+        }
+
+    def _default_admin_targets(self) -> list[str]:
+        try:
+            config = self.plugin.context.get_config()
+            admins = config.get("admins_id", []) if config is not None else []
+        except Exception:
+            return []
+        return [str(item).strip() for item in admins if str(item).strip().isdigit()]
+
+    @staticmethod
+    def _normalize_notify_target(target: str, platform_id: str) -> str | None:
+        target = target.strip()
+        if not target:
+            return None
+        if target.startswith(("GroupMessage:", "FriendMessage:")):
+            return f"{platform_id}:{target}"
+        if ":" in target:
+            return target
+        if target.isdigit():
+            return f"{platform_id}:FriendMessage:{target}"
+        return None
+
+    @staticmethod
+    def _format_auto_clean_message(result: dict[str, Any]) -> str:
+        counts = result.get("counts") or {}
+        detail = " / ".join(
+            f"{key} {value}" for key, value in counts.items() if int(value or 0)
+        )
+        targets = result.get("targets") or []
+        return "\n".join(
+            [
+                "【会话清道夫·自动清理】",
+                "时间：" + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "删除：" + str(int(result.get("deleted") or 0)) + " 行",
+                "会话：" + str(len(targets)) + " 个（已退群）",
+                "明细：" + (detail or "无"),
+                "备份：" + str(result.get("backup_id") or "--"),
+                "可在 Dashboard → 插件 → 会话清道夫 → 执行清理 中回滚。",
+            ]
+        )
+
     async def _run_clean_job(self, job_id: str, body: dict[str, Any]) -> None:
         try:
             async with self._scan_lock:
@@ -447,6 +650,7 @@ class PageApi:
         self,
         body: dict[str, Any],
         progress: ProgressCallback | None = None,
+        prefetched_scan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         error = self._validate_clean_body(body)
         if error:
@@ -464,14 +668,17 @@ class PageApi:
         )
         retain = cfg_int(self.plugin.config, "backup.retain", 5)
 
-        self._progress(progress, "读取当前群/好友列表", 3, "正在读取平台列表")
-        try:
-            scan = await self._perform_scan()
-        except Exception as exc:
-            message = f"清理前扫描失败，已中止：{exc}"
-            logger.warning(message)
-            self.store.append_log({"event": "clean", "ok": False, "error": message})
-            return {"ok": False, "error": message}
+        if prefetched_scan is None:
+            self._progress(progress, "读取当前群/好友列表", 3, "正在读取平台列表")
+            try:
+                scan = await self._perform_scan()
+            except Exception as exc:
+                message = f"清理前扫描失败，已中止：{exc}"
+                logger.warning(message)
+                self.store.append_log({"event": "clean", "ok": False, "error": message})
+                return {"ok": False, "error": message}
+        else:
+            scan = prefetched_scan
         self.store.save(scan)
 
         self._progress(progress, "扫描核心库", 12, "已读取群/好友列表，准备备份")
@@ -646,11 +853,17 @@ class PageApi:
     # ------------------------------------------------------------------
 
     def _normalize_settings(self, body: dict[str, Any]) -> dict[str, Any]:
-        def as_int(key: str, default: int, low: int, high: int) -> int:
+        def as_int(
+            key: str,
+            default: int,
+            low: int,
+            high: int,
+            label: str | None = None,
+        ) -> int:
             try:
                 value = int(body.get(key, default))
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"{key} 必须是整数") from exc
+                raise ValueError(f"{label or key}必须是整数") from exc
             return max(low, min(high, value))
 
         def as_bool(key: str, default: bool = False) -> bool:
@@ -670,24 +883,37 @@ class PageApi:
             return [part.strip() for part in parts if part.strip()]
 
         platform_id = str(body.get("platform_id") or "default").strip() or "default"
+        auto_enabled = as_bool("auto_clean_enabled", False)
+        auto_interval = as_int(
+            "scan_interval_minutes", 0, 0, 1440, "自动扫描间隔"
+        )
+        if auto_enabled and auto_interval <= 0:
+            raise ValueError("开启自动清理时，扫描间隔必须大于 0 分钟")
         return {
             "scan": {
                 "platform_id": platform_id,
-                "temp_session_days": as_int("temp_session_days", 30, 1, 365),
+                "temp_session_days": as_int(
+                    "temp_session_days", 30, 1, 365, "临时会话阈值"
+                ),
                 "include_provider_stats": as_bool("include_provider_stats", False),
                 "whitelist": as_list("whitelist"),
-                "scan_timeout_seconds": as_int("scan_timeout_seconds", 10, 3, 60),
+                "scan_timeout_seconds": as_int(
+                    "scan_timeout_seconds", 10, 3, 60, "平台列表超时"
+                ),
             },
             "automation": {
-                "auto_clean_enabled": as_bool("auto_clean_enabled", False),
-                "scan_interval_minutes": as_int("scan_interval_minutes", 0, 0, 1440),
+                "auto_clean_enabled": auto_enabled,
+                "scan_interval_minutes": auto_interval,
+                "include_provider_stats": as_bool(
+                    "auto_clean_include_provider_stats", False
+                ),
             },
             "notify": {
                 "enabled": as_bool("notify_enabled", True),
                 "targets": as_list("notify_targets"),
             },
             "backup": {
-                "retain": as_int("backup_retain", 5, 1, 30),
+                "retain": as_int("backup_retain", 5, 1, 30, "备份保留份数"),
             },
         }
 
@@ -706,6 +932,9 @@ class PageApi:
             ),
             "scan_interval_minutes": cfg_int(
                 config, "automation.scan_interval_minutes", 0
+            ),
+            "auto_clean_include_provider_stats": cfg_bool(
+                config, "automation.include_provider_stats", False
             ),
             "notify_enabled": cfg_bool(config, "notify.enabled", True),
             "notify_targets": cfg_list(config, "notify.targets", []),

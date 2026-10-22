@@ -164,6 +164,24 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["messages"][1]["texts"], ["你好呀"])
         self.assertEqual(detail["messages"][1]["thinks"], ["先打招呼"])
 
+    async def test_auto_clean_only_orphan_groups(self):
+        async def fake_fetch(context, platform_id="default", timeout=10.0):
+            return snapshot()
+
+        page_api_module.fetch_platform_snapshot = fake_fetch
+        result = await self.api.run_auto_clean()
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["skipped"])
+        self.assertEqual(result["targets"], 1)
+        self.assertEqual(result["result"]["counts"]["umo_aliases"], 1)
+        self.assertEqual(result["result"]["counts"]["conversations"], 3)
+        self.assertEqual(result["result"]["counts"]["preferences"], 1)
+        self.assertNotIn("provider_stats", result["result"]["counts"])
+        # 已删好友/临时会话不在自动清理范围内
+        self.assertEqual(result["result"]["targets"], ["default:GroupMessage:222"])
+        logs = await self.api.logs()
+        self.assertEqual(logs["items"][0]["event"], "auto_clean")
+
     async def test_settings_save(self):
         fake_request._json = {
             "platform_id": "default",
@@ -183,6 +201,48 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["config"]["backup_retain"], 7)
         self.assertTrue(result["config"]["include_provider_stats"])
         self.assertEqual(result["config"]["whitelist"], ["222", "333"])
+
+    async def test_notify_auto_clean(self):
+        sent = []
+
+        class _NotifyContext:
+            async def send_message(self, umo, chain):
+                sent.append(umo)
+                return True
+
+        self.plugin.context = _NotifyContext()
+        self.plugin.config["notify"] = {
+            "enabled": True,
+            "targets": ["default:GroupMessage:123"],
+        }
+        old_chain = page_api_module.MessageChain
+        old_plain = page_api_module.Plain
+        page_api_module.MessageChain = lambda chain: chain
+        page_api_module.Plain = lambda text: text
+        try:
+            result = await self.api._notify_auto_clean(
+                {
+                    "deleted": 2,
+                    "targets": ["default:GroupMessage:222"],
+                    "counts": {"umo_aliases": 1, "preferences": 1},
+                    "backup_id": "backup-test",
+                }
+            )
+        finally:
+            page_api_module.MessageChain = old_chain
+            page_api_module.Plain = old_plain
+        self.assertEqual(sent, ["default:GroupMessage:123"])
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(result["failed"], 0)
+
+    async def test_settings_auto_clean_requires_interval(self):
+        fake_request._json = {
+            "auto_clean_enabled": True,
+            "scan_interval_minutes": 0,
+        }
+        result = await self.api.settings_save()
+        self.assertFalse(result["ok"])
+        self.assertIn("扫描间隔", result["error"])
 
     async def test_clean_job_progress(self):
         async def fake_fetch(context, platform_id="default", timeout=10.0):
