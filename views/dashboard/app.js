@@ -1091,15 +1091,15 @@
       true
     ));
     form.appendChild(settingsField(
-      "执行后通知（预留）",
+      "执行后通知",
       checkInput("notify_enabled", config.notify_enabled),
-      "预留给后续自动清理通知，当前不会发送。",
+      "自动清理删除数据后发送摘要；通知失败不影响清理。",
       true
     ));
     form.appendChild(settingsField(
-      "通知目标（预留）",
-      textAreaInput("notify_targets", config.notify_targets, "每行一个群聊 UMO"),
-      "留空表示管理员私聊；当前不会发送。"
+      "通知目标",
+      textAreaInput("notify_targets", config.notify_targets, "每行一个群聊或私聊 UMO"),
+      "留空时发送给 AstrBot admins_id 里的数字管理员 QQ。"
     ));
     warningList($("settings-notes"), data.notes);
     await loadAutomationStatus();
