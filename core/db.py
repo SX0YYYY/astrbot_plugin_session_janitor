@@ -183,6 +183,8 @@ class JanitorDB:
             columns: dict[str, list[str]] = {}
             for table in tables:
                 columns[table] = self._columns(connection, table)
+                if table not in RELEVANT_TABLES:
+                    continue
                 try:
                     counts[table] = int(
                         connection.execute(f'select count(*) from "{table}"').fetchone()[0]

@@ -109,6 +109,8 @@ class PageApi:
             ("settings", self.settings, ["GET"], "当前配置"),
             ("settings_save", self.settings_save, ["POST"], "保存配置"),
             ("automation_status", self.automation_status, ["GET"], "自动清理状态"),
+            ("auto_clean_run", self.auto_clean_run, ["POST"], "立即运行一次自动清理"),
+            ("notify_test", self.notify_test, ["POST"], "发送测试通知"),
         )
         for route, handler, methods, desc in routes:
             register(f"/{PLUGIN_NAME}/{route}", handler, methods, desc)
@@ -148,6 +150,7 @@ class PageApi:
                 "summary",
                 "tables",
                 "warnings",
+                "changes",
             )
         }
         return jsonify(
@@ -303,14 +306,15 @@ class PageApi:
         refresh = getattr(automation, "refresh", None)
         if callable(refresh):
             refresh()
-        self.store.append_log(
-            {
-                "event": "settings",
-                "ok": True,
-                "platform_id": payload["scan"]["platform_id"],
-                "temp_session_days": payload["scan"]["temp_session_days"],
-            }
-        )
+            self.store.append_log(
+                {
+                    "event": "settings",
+                    "ok": True,
+                    "platform_id": payload["scan"]["platform_id"],
+                    "temp_session_days": payload["scan"]["temp_session_days"],
+                    "operator": self._operator(),
+                }
+            )
         return jsonify(
             {
                 "ok": True,
@@ -331,6 +335,47 @@ class PageApi:
             "last_result": None,
         }
         return jsonify({"ok": True, "status": status})
+
+    async def auto_clean_run(self) -> Any:
+        body = await self._body()
+        if str(body.get("confirm") or "").strip() != "确认运行":
+            return jsonify({"ok": False, "error": "请输入“确认运行”四个字"})
+        automation = getattr(self.plugin, "automation", None)
+        if automation is None or not callable(getattr(automation, "run_once", None)):
+            return jsonify({"ok": False, "error": "自动清理调度器未启动"})
+        result = await automation.run_once()
+        if result.get("ok"):
+            return jsonify({"ok": True, "result": result})
+        return jsonify(
+            {
+                "ok": False,
+                "error": result.get("error") or "自动清理失败",
+                "result": result,
+            }
+        )
+
+    async def notify_test(self) -> Any:
+        body = await self._body()
+        if str(body.get("confirm") or "").strip() != "确认发送":
+            return jsonify({"ok": False, "error": "请输入“确认发送”四个字"})
+        result = await self._notify_auto_clean(
+            {
+                "deleted": 1,
+                "targets": ["测试通知"],
+                "counts": {"preferences": 1},
+                "backup_id": "测试通知",
+            },
+            test=True,
+        )
+        if int(result.get("sent") or 0) > 0:
+            return jsonify({"ok": True, "result": result})
+        return jsonify(
+            {
+                "ok": False,
+                "error": result.get("reason") or "测试通知发送失败",
+                "result": result,
+            }
+        )
 
     # ------------------------------------------------------------------
     # POST
@@ -438,12 +483,26 @@ class PageApi:
             except ValueError as exc:
                 message = f"回滚失败：{exc}"
                 logger.warning(message)
-                self.store.append_log({"event": "rollback", "ok": False, "error": message})
+                self.store.append_log(
+                    {
+                        "event": "rollback",
+                        "ok": False,
+                        "error": message,
+                        "operator": self._operator(),
+                    }
+                )
                 return jsonify({"ok": False, "error": message})
             except Exception as exc:
                 message = f"回滚失败：{exc}"
                 logger.exception(message)
-                self.store.append_log({"event": "rollback", "ok": False, "error": message})
+                self.store.append_log(
+                    {
+                        "event": "rollback",
+                        "ok": False,
+                        "error": message,
+                        "operator": self._operator(),
+                    }
+                )
                 return jsonify({"ok": False, "error": message})
 
             fresh: dict[str, Any] | None = None
@@ -463,6 +522,7 @@ class PageApi:
                     "restored_files": result.get("restored_files"),
                     "skipped_files": result.get("skipped_files"),
                     "safety_backup_id": result.get("safety_backup_id"),
+                    "operator": self._operator(),
                 }
             )
             return jsonify({"ok": True, "result": result, "scan": fresh, "warning": warning})
@@ -569,7 +629,9 @@ class PageApi:
                 "warning": payload.get("warning"),
             }
 
-    async def _notify_auto_clean(self, result: dict[str, Any]) -> dict[str, Any]:
+    async def _notify_auto_clean(
+        self, result: dict[str, Any], test: bool = False
+    ) -> dict[str, Any]:
         if not int(result.get("deleted") or 0):
             return {"sent": 0, "failed": 0, "reason": "没有删除数据"}
         config = self.plugin.config or {}
@@ -587,7 +649,7 @@ class PageApi:
                 "failed": 0,
                 "reason": "没有通知目标（未配置 notify.targets，也没有数字管理员 QQ）",
             }
-        text = self._format_auto_clean_message(result)
+        text = self._format_auto_clean_message(result, test=test)
         sent = 0
         failed = 0
         errors: list[str] = []
@@ -647,7 +709,9 @@ class PageApi:
         return None
 
     @staticmethod
-    def _format_auto_clean_message(result: dict[str, Any]) -> str:
+    def _format_auto_clean_message(
+        result: dict[str, Any], test: bool = False
+    ) -> str:
         counts = result.get("counts") or {}
         detail = " / ".join(
             f"{TABLE_LABELS.get(key, key)} {value}"
@@ -655,9 +719,10 @@ class PageApi:
             if int(value or 0)
         )
         targets = result.get("targets") or []
+        title = "【会话清道夫·测试通知】" if test else "【会话清道夫·自动清理】"
         return "\n".join(
             [
-                "【会话清道夫·自动清理】",
+                title,
                 "时间：" + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "删除：" + str(int(result.get("deleted") or 0)) + " 行",
                 "会话：" + str(len(targets)) + " 个（已退群）",
@@ -741,10 +806,29 @@ class PageApi:
                 True,
                 mapped_progress,
             )
+        except RuntimeError as exc:
+            message = str(exc)
+            logger.warning(message)
+            self.store.append_log(
+                {
+                    "event": "clean",
+                    "ok": False,
+                    "error": message,
+                    "operator": self._operator(),
+                }
+            )
+            return {"ok": False, "error": message}
         except Exception as exc:
             message = f"清理失败，事务已回滚：{exc}"
             logger.exception(message)
-            self.store.append_log({"event": "clean", "ok": False, "error": message})
+            self.store.append_log(
+                {
+                    "event": "clean",
+                    "ok": False,
+                    "error": message,
+                    "operator": self._operator(),
+                }
+            )
             return {"ok": False, "error": message}
 
         self._progress(progress, "刷新扫描结果", 96, "正在重新扫描")
@@ -764,10 +848,21 @@ class PageApi:
                 "backup_id": result.backup_id,
                 "deleted": result.deleted,
                 "counts": result.counts,
+                "operator": self._operator(),
             }
         )
         self._progress(progress, "清理完成", 100, f"共删除 {result.deleted} 行")
         return {"ok": True, "result": result.to_dict(), "warning": warning}
+
+    def _operator(self) -> str:
+        if _request is None:
+            return ""
+        try:
+            state = getattr(_request, "state", None)
+            dashboard = getattr(state, "dashboard_g", None)
+            return str(getattr(dashboard, "username", "") or "")
+        except Exception:
+            return ""
 
     def _progress(
         self,
@@ -830,23 +925,37 @@ class PageApi:
     # ------------------------------------------------------------------
 
     async def _run_scan(self) -> dict[str, Any]:
+        previous = self.store.load()
         try:
             data = await self._perform_scan()
         except PlatformListError as exc:
             message = str(exc)
             logger.warning("会话清道夫扫描中止：%s", message)
             self.store.append_log(
-                {"event": "scan", "ok": False, "stage": "platform", "error": message}
+                {
+                    "event": "scan",
+                    "ok": False,
+                    "stage": "platform",
+                    "error": message,
+                    "operator": self._operator(),
+                }
             )
             return {"ok": False, "stage": "platform", "error": message}
         except Exception as exc:
             message = f"读取平台列表失败：{exc}"
             logger.warning("会话清道夫扫描中止：%s", message)
             self.store.append_log(
-                {"event": "scan", "ok": False, "stage": "platform", "error": message}
+                {
+                    "event": "scan",
+                    "ok": False,
+                    "stage": "platform",
+                    "error": message,
+                    "operator": self._operator(),
+                }
             )
             return {"ok": False, "stage": "platform", "error": message}
 
+        data["changes"] = self._diff_scans(previous, data)
         self.store.save(data)
         self.store.append_log(
             {
@@ -857,9 +966,66 @@ class PageApi:
                 "friends": (data.get("platform") or {}).get("friends"),
                 "targets": (data.get("summary") or {}).get("total"),
                 "candidates": (data.get("summary") or {}).get("candidates"),
+                "operator": self._operator(),
             }
         )
         return {"ok": True, "scan": data}
+
+    @staticmethod
+    def _diff_scans(
+        previous: dict[str, Any] | None,
+        current: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not previous:
+            return None
+        old_targets = {
+            str(item.get("umo")): item
+            for item in (previous.get("targets") or [])
+            if item.get("umo")
+        }
+        new_targets = {
+            str(item.get("umo")): item
+            for item in (current.get("targets") or [])
+            if item.get("umo")
+        }
+
+        def brief(item: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "umo": item.get("umo"),
+                "name": item.get("name"),
+                "status": item.get("status"),
+                "status_label": item.get("status_label"),
+            }
+
+        new_candidates = [
+            brief(item)
+            for umo, item in new_targets.items()
+            if item.get("selectable")
+            and (umo not in old_targets or not old_targets[umo].get("selectable"))
+        ]
+        resolved_candidates = [
+            brief(item)
+            for umo, item in old_targets.items()
+            if item.get("selectable")
+            and (umo not in new_targets or not new_targets[umo].get("selectable"))
+        ]
+        changed = []
+        for umo, item in new_targets.items():
+            old_item = old_targets.get(umo)
+            if old_item and old_item.get("status") != item.get("status"):
+                row = brief(item)
+                row["previous_status"] = old_item.get("status")
+                row["previous_status_label"] = old_item.get("status_label")
+                changed.append(row)
+        return {
+            "previous_generated_at": previous.get("generated_at"),
+            "new_count": len(new_candidates),
+            "resolved_count": len(resolved_candidates),
+            "changed_count": len(changed),
+            "new_candidates": new_candidates[:20],
+            "resolved_candidates": resolved_candidates[:20],
+            "changed": changed[:20],
+        }
 
     async def _perform_scan(self) -> dict[str, Any]:
         config = self.plugin.config or {}

@@ -9,13 +9,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
 
 from .config import cfg_bool, cfg_int
+
+
+def _float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class AutoCleaner:
@@ -29,6 +39,48 @@ class AutoCleaner:
         self._next_run: float | None = None
         self._last_result: dict[str, Any] | None = None
         self._state_key: tuple[bool, int] | None = None
+        data_dir = getattr(plugin, "data_dir", None)
+        self._state_file: Path | None = (
+            Path(data_dir) / "automation_state.json" if data_dir is not None else None
+        )
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if self._state_file is None or not self._state_file.is_file():
+            return
+        try:
+            data = json.loads(self._state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        last_run = _float(data.get("last_run"))
+        if last_run is not None:
+            self._last_run = last_run
+        if isinstance(data.get("last_result"), dict):
+            self._last_result = data["last_result"]
+        next_run = _float(data.get("next_run"))
+        if next_run is not None and next_run > time.time():
+            self._next_run = next_run
+
+    def _save_state(self) -> None:
+        if self._state_file is None:
+            return
+        payload = {
+            "last_run": self._last_run,
+            "last_result": self._last_result,
+            "next_run": self._next_run,
+        }
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._state_file.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, self._state_file)
+        except OSError:
+            pass
 
     def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -60,13 +112,17 @@ class AutoCleaner:
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
         interval = cfg_int(config, "automation.scan_interval_minutes", 0)
         if not enabled or interval <= 0:
+            changed = self._next_run is not None or self._state_key is not None
             self._next_run = None
             self._state_key = None
+            if changed:
+                self._save_state()
             return
         key = (True, int(interval))
         if key != self._state_key or self._next_run is None:
             self._state_key = key
             self._next_run = time.time() + interval * 60
+            self._save_state()
 
     def status(self) -> dict[str, Any]:
         config = self.plugin.config or {}
@@ -97,6 +153,7 @@ class AutoCleaner:
             self._running = False
         self._last_run = time.time()
         self._last_result = result
+        self._save_state()
         return result
 
     async def _loop(self) -> None:
@@ -117,13 +174,17 @@ class AutoCleaner:
                 now = time.time()
 
                 if not enabled or interval <= 0:
+                    changed = self._next_run is not None or self._state_key is not None
                     self._next_run = None
                     self._state_key = None
+                    if changed:
+                        self._save_state()
                     continue
 
                 if key != self._state_key or self._next_run is None:
                     self._state_key = key
                     self._next_run = now + interval * 60
+                    self._save_state()
                     logger.info(
                         "会话清道夫自动清理已启用：每 %d 分钟执行一次", interval
                     )
@@ -133,6 +194,7 @@ class AutoCleaner:
                     logger.info("会话清道夫开始执行定时自动清理")
                     await self.run_once()
                     self._next_run = time.time() + interval * 60
+                    self._save_state()
             except asyncio.CancelledError:
                 raise
             except Exception:

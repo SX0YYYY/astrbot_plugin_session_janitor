@@ -102,6 +102,28 @@
     if (kind) node.classList.add(kind);
   }
 
+  function setNodeStatus(node, text, kind) {
+    if (!node) return;
+    node.textContent = text || "";
+    node.className = "inline-status" + (kind ? " " + kind : "");
+  }
+
+  function downloadJSON(data, filename) {
+    try {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (error) {
+      showBanner("下载失败：" + (error && error.message ? error.message : String(error)), "error");
+    }
+  }
+
   function setBusy(button, busy, label) {
     if (!button) return;
     button.disabled = busy;
@@ -190,6 +212,7 @@
     renderMetrics(data);
     renderPlatform(data);
     renderTables(data);
+    renderScanChanges(scan);
     warningList($("overview-warnings"), data.warnings);
     const scan = data.scan;
     if (data.needs_scan || !scan) {
@@ -228,6 +251,62 @@
     box.appendChild(infoRow("主库", database.exists ? "已找到 data_v4.db" : "未找到 data_v4.db"));
     box.appendChild(infoRow("扫描时间", fmtTime(scan.generated_at)));
     $("platform-captured").textContent = platform.captured_at ? "获取于 " + fmtTime(platform.captured_at) : "--";
+  }
+
+  function renderScanChanges(scan) {
+    const card = $("scan-changes-card");
+    const box = $("scan-changes");
+    if (!card || !box) return;
+    const changes = scan && scan.changes;
+    if (!changes || (!changes.new_count && !changes.resolved_count && !changes.changed_count)) {
+      card.classList.add("hidden");
+      return;
+    }
+    card.classList.remove("hidden");
+    $("scan-changes-time").textContent = changes.previous_generated_at
+      ? "上次 " + fmtTime(changes.previous_generated_at)
+      : "";
+    box.replaceChildren();
+    box.appendChild(el(
+      "p",
+      "panel-hint",
+      "新增候选 " + fmtNum(changes.new_count) + " 个；已解决 " + fmtNum(changes.resolved_count) +
+        " 个；状态变化 " + fmtNum(changes.changed_count) + " 个。"
+    ));
+    const list = el("div", "message-list");
+    (changes.new_candidates || []).forEach(function (item) {
+      const row = el("div", "message-item");
+      row.appendChild(el("div", "message-meta", "新增候选"));
+      row.appendChild(el(
+        "div",
+        "message-content",
+        (item.name || item.umo || "--") + "（" + (item.status_label || item.status || "") + "）"
+      ));
+      list.appendChild(row);
+    });
+    (changes.resolved_candidates || []).forEach(function (item) {
+      const row = el("div", "message-item");
+      row.appendChild(el("div", "message-meta", "已解决/不再可清理"));
+      row.appendChild(el(
+        "div",
+        "message-content",
+        (item.name || item.umo || "--") + "（" + (item.status_label || item.status || "") + "）"
+      ));
+      list.appendChild(row);
+    });
+    (changes.changed || []).forEach(function (item) {
+      const row = el("div", "message-item");
+      row.appendChild(el("div", "message-meta", "状态变化"));
+      row.appendChild(el(
+        "div",
+        "message-content",
+        (item.name || item.umo || "--") + "：" +
+          (item.previous_status_label || item.previous_status || "?") + " → " +
+          (item.status_label || item.status || "?")
+      ));
+      list.appendChild(row);
+    });
+    if (list.childNodes.length) box.appendChild(list);
   }
 
   function renderTables(data) {
@@ -1003,6 +1082,15 @@
       box.appendChild(el("div", "warning-item", text));
     });
     if (warning) box.appendChild(el("div", "warning-item", warning));
+    const download = el("button", "ghost small", "下载本次清理明细（JSON）");
+    download.type = "button";
+    download.addEventListener("click", function () {
+      downloadJSON(
+        result,
+        "会话清道夫清理明细_" + (result.backup_id || "备份") + ".json"
+      );
+    });
+    box.appendChild(download);
   }
 
   async function rollbackBackup(backupId, button) {
@@ -1254,6 +1342,16 @@
       "留空时发送给 AstrBot admins_id 里的数字管理员 QQ。",
       { full: true }
     ));
+    const notifyTestField = el("div", "settings-field full");
+    const testButton = el("button", "ghost small", "发送测试通知");
+    testButton.type = "button";
+    const testStatus = el("span", "inline-status", "");
+    testButton.addEventListener("click", function () {
+      sendTestNotify(testButton, testStatus);
+    });
+    notifyTestField.appendChild(testButton);
+    notifyTestField.appendChild(testStatus);
+    notifyGrid.appendChild(notifyTestField);
 
     warningList($("settings-notes"), data.notes);
     await loadAutomationStatus();
@@ -1313,6 +1411,16 @@
       }
       grid.appendChild(automationItem("上次结果", lastText, lastKind));
       box.appendChild(grid);
+      const actions = el("div", "automation-actions");
+      const runButton = el("button", "ghost small", "立即运行一次");
+      runButton.type = "button";
+      const runStatus = el("span", "inline-status", "");
+      runButton.addEventListener("click", function () {
+        runAutoCleanOnce(runButton, runStatus);
+      });
+      actions.appendChild(runButton);
+      actions.appendChild(runStatus);
+      box.appendChild(actions);
       box.appendChild(el(
         "p",
         "automation-foot",
@@ -1329,6 +1437,74 @@
     item.appendChild(el("span", "", label));
     item.appendChild(el("strong", kind ? "automation-" + kind : "", value));
     return item;
+  }
+
+  async function runAutoCleanOnce(button, statusNode) {
+    if (!window.confirm(
+      "立即运行一次自动清理？\n" +
+      "只清理已退群会话，默认不含 provider_stats；执行前会备份整库。"
+    )) {
+      return;
+    }
+    setBusy(button, true, "运行中…");
+    setNodeStatus(statusNode, "正在扫描并清理…");
+    try {
+      const data = await apiPost("auto_clean_run", { confirm: "确认运行" });
+      if (!data.ok) {
+        setNodeStatus(statusNode, data.error || "运行失败", "error");
+        return;
+      }
+      const result = data.result || {};
+      if (result.skipped) {
+        setNodeStatus(statusNode, "没有可自动清理的已退群会话", "success");
+      } else {
+        const detail = result.result || {};
+        setNodeStatus(
+          statusNode,
+          "完成：删除 " + fmtNum(detail.deleted) + " 行，备份 " + (detail.backup_id || "--"),
+          "success"
+        );
+      }
+      await loadOverview();
+      await loadCleanTab();
+    } catch (error) {
+      setNodeStatus(
+        statusNode,
+        error && error.message ? error.message : String(error),
+        "error"
+      );
+    } finally {
+      setBusy(button, false, "立即运行一次");
+    }
+  }
+
+  async function sendTestNotify(button, statusNode) {
+    if (!window.confirm("发送一条测试通知到当前通知目标？")) {
+      return;
+    }
+    setBusy(button, true, "发送中…");
+    setNodeStatus(statusNode, "正在发送…");
+    try {
+      const data = await apiPost("notify_test", { confirm: "确认发送" });
+      if (!data.ok) {
+        setNodeStatus(statusNode, data.error || "发送失败", "error");
+        return;
+      }
+      const result = data.result || {};
+      setNodeStatus(
+        statusNode,
+        "已发送 " + fmtNum(result.sent) + " 个，失败 " + fmtNum(result.failed) + " 个",
+        "success"
+      );
+    } catch (error) {
+      setNodeStatus(
+        statusNode,
+        error && error.message ? error.message : String(error),
+        "error"
+      );
+    } finally {
+      setBusy(button, false, "发送测试通知");
+    }
   }
 
   async function saveSettings() {

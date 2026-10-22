@@ -517,6 +517,13 @@ button.danger {
 }
 .automation-ok { color: var(--ok); }
 .automation-bad { color: var(--danger); }
+.automation-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
 .automation-foot {
   margin: 12px 0 0;
   color: var(--muted);

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <title>会话清道夫</title>
-  <link rel="stylesheet" href="./style.css?v=0.6.2" />
+  <link rel="stylesheet" href="./style.css?v=0.6.3" />
 </head>
 <body>
   <div class="page">
@@ -14,12 +14,12 @@
         <div class="logo" aria-hidden="true">清</div>
         <div class="brand-text">
           <h1>会话清道夫</h1>
-          <p id="subtitle">扫描 / 清理 / 回滚 · V0.6.2</p>
+          <p id="subtitle">扫描 / 清理 / 回滚 · V0.6.3</p>
         </div>
       </div>
       <div class="top-actions">
         <span class="inline-status" id="global-status"></span>
-        <span class="pill" id="version">v0.6.2</span>
+        <span class="pill" id="version">v0.6.3</span>
         <button id="scan-btn" class="primary" type="button"
           title="重新读取当前 QQ 群/好友列表并扫描核心库，更新所有标签页的数据。">开始扫描</button>
         <button id="refresh-btn" class="ghost" type="button"
@@ -77,6 +77,13 @@
         <div class="card">
           <div class="card-head"><h2>扫描提示</h2></div>
           <div id="overview-warnings" class="warnings"></div>
+        </div>
+        <div class="card hidden" id="scan-changes-card">
+          <div class="card-head">
+            <h2>与上次扫描对比</h2>
+            <span class="muted" id="scan-changes-time">--</span>
+          </div>
+          <div id="scan-changes"></div>
         </div>
       </section>
 
@@ -277,6 +284,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=0.6.2" defer></script>
+  <script src="./app.js?v=0.6.3" defer></script>
 </body>
 </html>

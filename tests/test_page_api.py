@@ -5,6 +5,7 @@ import logging
 import sqlite3
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -50,6 +51,7 @@ sys.modules.setdefault("astrbot.api.star", star_module)
 sys.modules.setdefault("astrbot.api.web", web_module)
 
 from astrbot_plugin_session_janitor import page_api as page_api_module  # noqa: E402
+from astrbot_plugin_session_janitor.core.automation import AutoCleaner  # noqa: E402
 from astrbot_plugin_session_janitor.core.backup import BackupStore  # noqa: E402
 from astrbot_plugin_session_janitor.core.store import ScanStore  # noqa: E402
 from astrbot_plugin_session_janitor.main import SessionJanitorPlugin  # noqa: E402
@@ -236,6 +238,33 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sent"], 1)
         self.assertEqual(result["failed"], 0)
 
+    async def test_notify_test_route(self):
+        sent = []
+
+        class _NotifyContext:
+            async def send_message(self, umo, chain):
+                sent.append(umo)
+                return True
+
+        self.plugin.context = _NotifyContext()
+        self.plugin.config["notify"] = {
+            "enabled": True,
+            "targets": ["default:GroupMessage:123"],
+        }
+        old_chain = page_api_module.MessageChain
+        old_plain = page_api_module.Plain
+        page_api_module.MessageChain = lambda chain: chain
+        page_api_module.Plain = lambda text: text
+        try:
+            fake_request._json = {"confirm": "确认发送"}
+            result = await self.api.notify_test()
+        finally:
+            page_api_module.MessageChain = old_chain
+            page_api_module.Plain = old_plain
+        self.assertTrue(result["ok"])
+        self.assertEqual(sent, ["default:GroupMessage:123"])
+        self.assertEqual(result["result"]["sent"], 1)
+
     async def test_settings_auto_clean_requires_interval(self):
         fake_request._json = {
             "auto_clean_enabled": True,
@@ -368,6 +397,47 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.plugin.context = _Ctx()
         self.assertEqual(self.api._default_admin_targets(), ["123456"])
+
+    async def test_diff_scans(self):
+        previous = {
+            "generated_at": "old",
+            "targets": [
+                {"umo": "a", "name": "A", "status": "active", "selectable": False},
+                {"umo": "b", "name": "B", "status": "orphan_group", "selectable": True},
+            ],
+        }
+        current = {
+            "generated_at": "new",
+            "targets": [
+                {"umo": "a", "name": "A", "status": "orphan_group", "selectable": True},
+                {"umo": "b", "name": "B", "status": "active", "selectable": False},
+                {"umo": "c", "name": "C", "status": "orphan_group", "selectable": True},
+            ],
+        }
+        diff = self.api._diff_scans(previous, current)
+        self.assertEqual(diff["new_count"], 2)
+        self.assertEqual(diff["resolved_count"], 1)
+        self.assertEqual(diff["changed_count"], 2)
+        self.assertEqual(diff["previous_generated_at"], "old")
+
+    async def test_auto_clean_run_requires_confirm(self):
+        fake_request._json = {"confirm": ""}
+        result = await self.api.auto_clean_run()
+        self.assertFalse(result["ok"])
+        self.assertIn("确认运行", result["error"])
+
+    async def test_automation_state_persists(self):
+        first = AutoCleaner(self.plugin, self.api)
+        first._last_run = 1234567890.0
+        first._last_result = {"ok": True, "skipped": True}
+        first._next_run = time.time() + 3600
+        first._save_state()
+
+        second = AutoCleaner(self.plugin, self.api)
+        self.assertEqual(second._last_run, 1234567890.0)
+        self.assertEqual(second._last_result, {"ok": True, "skipped": True})
+        self.assertIsNotNone(second._next_run)
+        self.assertGreater(second._next_run, time.time())
 
 
 if __name__ == "__main__":
