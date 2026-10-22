@@ -1,1 +1,1 @@
-# V0.3 只使用 AstrBot 运行时与 Python 标准库，无需额外依赖。
+# 只使用 AstrBot 运行时与 Python 标准库，无需额外依赖。

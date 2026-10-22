@@ -25,14 +25,14 @@ except Exception:  # 通知是可选项，缺少消息组件时只写日志
     Plain = None
     MessageChain = None
 
-from .constants import PLUGIN_NAME
+from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .core.cleaner import CoreCleaner
-from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list
+from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list, strict_bool
 from .core.db import JanitorDB
 from .core.detail import build_conversation_detail, build_session_detail
 from .core.models import TABLE_KEYS
 from .core.platform import PlatformListError, fetch_platform_snapshot
-from .core.preview import build_preview
+from .core.preview import TABLE_LABELS, build_preview
 from .core.scanner import Scanner
 
 ProgressCallback = Callable[[str, int, str], None]
@@ -64,6 +64,25 @@ class PageApi:
         self.store = plugin.store
         self._scan_lock = asyncio.Lock()
         self._jobs: dict[str, dict[str, Any]] = {}
+        self._job_tasks: dict[str, asyncio.Task] = {}
+
+    async def shutdown(self) -> None:
+        """插件卸载/重载时取消尚未完成的清理任务。"""
+
+        tasks = list(self._job_tasks.values())
+        self._job_tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for job in self._jobs.values():
+            if job.get("status") == "running":
+                job["status"] = "error"
+                job["stage"] = "已取消"
+                job["message"] = "插件卸载，清理任务已取消"
+                job["error"] = job["message"]
+                job["finished_at"] = time.time()
 
     def register(self) -> None:
         if _json_response is None or _request is None:
@@ -331,11 +350,12 @@ class PageApi:
             value = await _request.json(default={})
             if isinstance(value, dict):
                 body = value
-        include_provider_stats = bool(
-            body.get(
-                "include_provider_stats",
-                cfg_bool(self.plugin.config, "scan.include_provider_stats", False),
-            )
+        default_include = cfg_bool(
+            self.plugin.config, "scan.include_provider_stats", False
+        )
+        include_provider_stats = strict_bool(
+            body.get("include_provider_stats", default_include),
+            default_include,
         )
         return jsonify(
             {
@@ -377,7 +397,9 @@ class PageApi:
             "result": None,
             "error": None,
         }
-        asyncio.create_task(self._run_clean_job(job_id, body))
+        task = asyncio.create_task(self._run_clean_job(job_id, body))
+        self._job_tasks[job_id] = task
+        task.add_done_callback(lambda _task: self._job_tasks.pop(job_id, None))
         return jsonify({"ok": True, "job_id": job_id})
 
     async def clean_status(self) -> Any:
@@ -402,14 +424,22 @@ class PageApi:
     async def rollback(self) -> Any:
         async with self._scan_lock:
             body = await self._body()
-            if str(body.get("confirm") or "").strip().upper() != "RESTORE":
-                return jsonify({"ok": False, "error": "请输入 RESTORE 确认回滚"})
+            confirm = str(body.get("confirm") or "").strip()
+            if confirm not in {"确认回滚", "RESTORE"}:
+                return jsonify(
+                    {"ok": False, "error": "请输入“确认回滚”四个字确认回滚"}
+                )
             backup_id = str(body.get("backup_id") or "").strip()
             if not backup_id:
                 return jsonify({"ok": False, "error": "缺少 backup_id"})
             cleaner = CoreCleaner(self.plugin.db_path, self.plugin.backup_store)
             try:
                 result = await asyncio.to_thread(cleaner.rollback, backup_id)
+            except ValueError as exc:
+                message = f"回滚失败：{exc}"
+                logger.warning(message)
+                self.store.append_log({"event": "rollback", "ok": False, "error": message})
+                return jsonify({"ok": False, "error": message})
             except Exception as exc:
                 message = f"回滚失败：{exc}"
                 logger.exception(message)
@@ -431,6 +461,8 @@ class PageApi:
                     "backup_id": backup_id,
                     "restored": result.get("restored"),
                     "restored_files": result.get("restored_files"),
+                    "skipped_files": result.get("skipped_files"),
+                    "safety_backup_id": result.get("safety_backup_id"),
                 }
             )
             return jsonify({"ok": True, "result": result, "scan": fresh, "warning": warning})
@@ -590,7 +622,16 @@ class PageApi:
             admins = config.get("admins_id", []) if config is not None else []
         except Exception:
             return []
-        return [str(item).strip() for item in admins if str(item).strip().isdigit()]
+        if isinstance(admins, str):
+            admins = [admins]
+        elif not isinstance(admins, (list, tuple, set)):
+            return []
+        result: list[str] = []
+        for item in admins:
+            text = str(item).strip()
+            if text.isdigit() and text not in result:
+                result.append(text)
+        return result
 
     @staticmethod
     def _normalize_notify_target(target: str, platform_id: str) -> str | None:
@@ -609,7 +650,9 @@ class PageApi:
     def _format_auto_clean_message(result: dict[str, Any]) -> str:
         counts = result.get("counts") or {}
         detail = " / ".join(
-            f"{key} {value}" for key, value in counts.items() if int(value or 0)
+            f"{TABLE_LABELS.get(key, key)} {value}"
+            for key, value in counts.items()
+            if int(value or 0)
         )
         targets = result.get("targets") or []
         return "\n".join(
@@ -660,11 +703,12 @@ class PageApi:
             for item in (body.get("targets") or [])
             if str(item).strip()
         ]
-        include_provider_stats = bool(
-            body.get(
-                "include_provider_stats",
-                cfg_bool(self.plugin.config, "scan.include_provider_stats", False),
-            )
+        default_include = cfg_bool(
+            self.plugin.config, "scan.include_provider_stats", False
+        )
+        include_provider_stats = strict_bool(
+            body.get("include_provider_stats", default_include),
+            default_include,
         )
         retain = cfg_int(self.plugin.config, "backup.retain", 5)
 
@@ -864,13 +908,14 @@ class PageApi:
                 value = int(body.get(key, default))
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"{label or key}必须是整数") from exc
-            return max(low, min(high, value))
+            if value < low or value > high:
+                raise ValueError(
+                    f"{label or key}必须在 {low}–{high} 之间，当前值 {value}"
+                )
+            return value
 
         def as_bool(key: str, default: bool = False) -> bool:
-            value = body.get(key, default)
-            if isinstance(value, str):
-                return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
-            return bool(value)
+            return strict_bool(body.get(key, default), default)
 
         def as_list(key: str) -> list[str]:
             value = body.get(key)
@@ -920,6 +965,7 @@ class PageApi:
     def _config_view(self) -> dict[str, Any]:
         config = self.plugin.config or {}
         return {
+            "version": PLUGIN_VERSION,
             "platform_id": str(cfg_get(config, "scan.platform_id", "default") or "default"),
             "temp_session_days": cfg_int(config, "scan.temp_session_days", 30),
             "include_provider_stats": cfg_bool(

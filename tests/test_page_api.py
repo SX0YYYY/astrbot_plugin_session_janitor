@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import sys
 import tempfile
 import types
@@ -301,11 +302,17 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(backups["items"])
         backup_id = cleaned["result"]["backup_id"]
 
-        fake_request._json = {"backup_id": backup_id, "confirm": "RESTORE"}
+        fake_request._json = {"backup_id": backup_id, "confirm": "确认回滚"}
         rolled = await self.api.rollback()
         self.assertTrue(rolled["ok"])
+        self.assertTrue(rolled["result"]["safety_backup_id"])
         overview = await self.api.overview()
         self.assertEqual(overview["scan"]["summary"]["total"], 5)
+
+        fake_request._json = {"backup_id": backup_id, "confirm": "确认回滚"}
+        again = await self.api.rollback()
+        self.assertFalse(again["ok"])
+        self.assertIn("已经回滚过", again["error"])
 
     async def test_clean_requires_confirmation(self):
         async def fake_fetch(context, platform_id="default", timeout=10.0):
@@ -324,6 +331,43 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         result = await self.api._run_scan()
         self.assertFalse(result["ok"])
         self.assertEqual(result["stage"], "platform")
+
+    async def test_include_provider_stats_string_false_is_false(self):
+        async def fake_fetch(context, platform_id="default", timeout=10.0):
+            return snapshot()
+
+        page_api_module.fetch_platform_snapshot = fake_fetch
+        fake_request._json = {
+            "targets": ["default:GroupMessage:222"],
+            "confirm": "确认删除",
+            "include_provider_stats": "false",
+        }
+        result = await self.api.clean()
+        self.assertTrue(result["ok"])
+        self.assertNotIn("provider_stats", result["result"]["counts"])
+        con = sqlite3.connect(self.db)
+        try:
+            count = con.execute(
+                "select count(*) from provider_stats where umo = ?",
+                ("default:GroupMessage:222",),
+            ).fetchone()[0]
+        finally:
+            con.close()
+        self.assertEqual(count, 4)
+
+    async def test_settings_out_of_range_rejected(self):
+        fake_request._json = {"temp_session_days": 0}
+        result = await self.api.settings_save()
+        self.assertFalse(result["ok"])
+        self.assertIn("必须在", result["error"])
+
+    async def test_admins_id_string_is_not_split(self):
+        class _Ctx:
+            def get_config(self):
+                return {"admins_id": "123456"}
+
+        self.plugin.context = _Ctx()
+        self.assertEqual(self.api._default_admin_targets(), ["123456"])
 
 
 if __name__ == "__main__":

@@ -17,6 +17,20 @@
     whitelisted: "白名单",
   };
   const TYPE_LABELS = { group: "群聊", friend: "好友/私聊" };
+  const BACKUP_STATUS_LABELS = {
+    created: "已创建",
+    pending: "进行中",
+    completed: "已完成",
+    restored: "已回滚",
+    failed: "失败",
+  };
+  const EVENT_LABELS = {
+    scan: "扫描",
+    clean: "清理",
+    auto_clean: "自动清理",
+    rollback: "回滚",
+    settings: "设置",
+  };
   const MAX_LISTED_PREFERENCES = 30;
 
   const state = {
@@ -27,8 +41,10 @@
     cleanLoaded: false,
     logsLoaded: false,
     settingsLoaded: false,
+    previewSwitchInitialized: false,
     cleanJob: null,
   };
+  let detailRequestId = 0;
 
   function $(id) {
     return document.getElementById(id);
@@ -160,6 +176,17 @@
     state.overview = data;
     state.sessionsLoaded = false;
     state.cleanLoaded = false;
+    state.previewLoaded = false;
+    state.logsLoaded = false;
+    if (!state.previewSwitchInitialized) {
+      const previewSwitch = $("include-provider-stats");
+      if (previewSwitch) {
+        previewSwitch.checked = Boolean((data.config || {}).include_provider_stats);
+        state.previewSwitchInitialized = true;
+      }
+    }
+    const version = (data.config || {}).version;
+    if (version) $("version").textContent = "v" + version;
     renderMetrics(data);
     renderPlatform(data);
     renderTables(data);
@@ -178,8 +205,8 @@
     const scan = data.scan || {};
     const platform = scan.platform || {};
     const summary = scan.summary || {};
-    grid.appendChild(metric("当前群", platform.groups != null ? fmtNum(platform.groups) : "--", "get_group_list"));
-    grid.appendChild(metric("当前好友", platform.friends != null ? fmtNum(platform.friends) : "--", "get_friend_list"));
+    grid.appendChild(metric("当前群", platform.groups != null ? fmtNum(platform.groups) : "--", "群列表接口"));
+    grid.appendChild(metric("当前好友", platform.friends != null ? fmtNum(platform.friends) : "--", "好友列表接口"));
     grid.appendChild(metric("已退群", summary.orphan_group != null ? fmtNum(summary.orphan_group) : "--", "默认勾选"));
     grid.appendChild(metric("过期临时会话", summary.expired_temp != null ? fmtNum(summary.expired_temp) : "--", "默认不勾选"));
     grid.appendChild(metric("好友列表外", summary.missing_friend != null ? fmtNum(summary.missing_friend) : "--", "默认不勾选"));
@@ -196,7 +223,8 @@
     box.appendChild(infoRow("群列表", platform.groups != null ? fmtNum(platform.groups) : "--"));
     box.appendChild(infoRow("好友列表", platform.friends != null ? fmtNum(platform.friends) : "--"));
     box.appendChild(infoRow("列表获取时间", fmtTime(platform.captured_at)));
-    box.appendChild(infoRow("数据来源", platform.source || "aiocqhttp"));
+    const source = platform.source || "aiocqhttp";
+    box.appendChild(infoRow("数据来源", source === "aiocqhttp" ? "aiocqhttp（QQ 适配器）" : source));
     box.appendChild(infoRow("主库", database.exists ? "已找到 data_v4.db" : "未找到 data_v4.db"));
     box.appendChild(infoRow("扫描时间", fmtTime(scan.generated_at)));
     $("platform-captured").textContent = platform.captured_at ? "获取于 " + fmtTime(platform.captured_at) : "--";
@@ -221,8 +249,7 @@
       row.appendChild(el("td", "num", info && info.orphan != null ? fmtNum(info.orphan) : "--"));
       let note = "";
       if (key === "provider_stats") note = "默认不计入预览";
-      if (key === "platform_sessions") note = "当前均为 webchat，跳过";
-      if (info && info.skipped) note = "已跳过";
+      if (info && info.skipped) note = "已跳过（插件不处理）";
       row.appendChild(el("td", "muted", note));
       body.appendChild(row);
     });
@@ -281,11 +308,15 @@
       body.appendChild(row);
     });
     $("sessions-empty").classList.toggle("hidden", items.length > 0);
-    $("sessions-summary").textContent = "共 " + fmtNum(data.total) + " 个会话";
+    const total = Number(data.total || items.length);
+    $("sessions-summary").textContent = total > items.length
+      ? "共 " + fmtNum(total) + " 个会话（当前显示前 " + fmtNum(items.length) + " 个，请用筛选缩小范围）"
+      : "共 " + fmtNum(total) + " 个会话";
     return data;
   }
 
   async function openDetail(umo) {
+    const requestId = ++detailRequestId;
     const modal = $("detail-modal");
     modal.classList.remove("hidden");
     document.body.style.overflow = "hidden";
@@ -294,17 +325,20 @@
     body.replaceChildren(el("p", "muted", "正在读取详情…"));
     try {
       const data = await apiGet("session_detail", { umo: umo, limit: 20 });
+      if (requestId !== detailRequestId) return;
       if (!data.ok) {
         body.replaceChildren(el("p", "error-text", data.error || "读取详情失败"));
         return;
       }
       renderDetail(data.detail);
     } catch (error) {
+      if (requestId !== detailRequestId) return;
       body.replaceChildren(el("p", "error-text", error && error.message ? error.message : String(error)));
     }
   }
 
   function closeDetail() {
+    detailRequestId += 1;
     $("detail-modal").classList.add("hidden");
     document.body.style.overflow = "";
   }
@@ -316,7 +350,8 @@
   }
 
   async function loadConversation(conversationId, umo, container, button) {
-    if (!container.classList.contains("hidden")) {
+    const failed = container.dataset.state === "error";
+    if (!container.classList.contains("hidden") && !failed) {
       container.classList.add("hidden");
       button.textContent = "查看对话记录";
       return;
@@ -324,6 +359,7 @@
     button.disabled = true;
     button.textContent = "加载中…";
     container.classList.remove("hidden");
+    container.dataset.state = "loading";
     container.replaceChildren(el("p", "muted", "正在读取核心库对话记录…"));
     try {
       const data = await apiGet("conversation_detail", {
@@ -332,17 +368,22 @@
         limit: 200,
       });
       if (!data.ok) {
+        container.dataset.state = "error";
         container.replaceChildren(el("p", "error-text", data.error || "读取对话记录失败"));
+        button.textContent = "重试";
         return;
       }
       renderConversationMessages(data.detail, container);
+      container.dataset.state = "loaded";
       button.textContent = "收起对话记录";
     } catch (error) {
+      container.dataset.state = "error";
       container.replaceChildren(el(
         "p",
         "error-text",
         error && error.message ? error.message : String(error)
       ));
+      button.textContent = "重试";
     } finally {
       button.disabled = false;
     }
@@ -537,6 +578,9 @@
         meta.appendChild(el("span", "mono", item.key || "(无 key)"));
         meta.appendChild(el("span", "", item.scope_id || ""));
         meta.appendChild(el("span", "", fmtTime(item.last_active)));
+        if (item.shared) {
+          meta.appendChild(el("span", "pill soft", "跨会话共享，不会自动清理"));
+        }
         row.appendChild(meta);
         row.appendChild(el("div", "message-content", item.value_preview || ""));
         list.appendChild(row);
@@ -563,7 +607,7 @@
       msgSection.appendChild(el(
         "p",
         "empty",
-        "核心库里没有该会话的平台消息历史。当前核心库的 47 条消息全部来自 WebChat；QQ 会话正文不在核心库。"
+        "核心库里没有该会话的平台消息历史。QQ 群/好友的聊天正文不在核心框架里；本插件不读取任何插件数据。"
       ));
     } else {
       const list = el("div", "message-list");
@@ -701,6 +745,7 @@
       const only = onlyProvider(item);
       const row = el("label", "candidate-item" + (only ? " candidate-only-provider" : ""));
       row.dataset.onlyProvider = only ? "1" : "0";
+      row.dataset.status = item.status || "";
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
       checkbox.value = item.umo;
@@ -723,6 +768,15 @@
       row.appendChild(main);
       box.appendChild(row);
     });
+    const totalSessions = Number(data.total || candidates.length);
+    if (totalSessions > (data.items || []).length) {
+      box.appendChild(el(
+        "p",
+        "detail-note",
+        "共 " + fmtNum(totalSessions) + " 个会话，当前只读取前 " +
+          fmtNum((data.items || []).length) + " 个；请先到会话列表用筛选缩小范围。"
+      ));
+    }
     applyCleanVisibility();
     await loadBackups();
     return data;
@@ -731,9 +785,11 @@
   function applyCleanVisibility() {
     const showOnly = $("show-provider-only").checked || $("clean-include-provider-stats").checked;
     let hidden = 0;
+    let nonOrphanOnly = 0;
     document.querySelectorAll("#clean-targets .candidate-item").forEach(function (row) {
       const only = row.dataset.onlyProvider === "1";
       row.classList.toggle("hidden", only && !showOnly);
+      if (only && row.dataset.status !== "orphan_group") nonOrphanOnly += 1;
       if (only && !showOnly) {
         const input = row.querySelector("input");
         if (input) input.checked = false;
@@ -743,8 +799,15 @@
     const note = $("provider-only-note");
     if (!note) return;
     if (!hidden) {
-      note.textContent = "";
-      note.classList.add("hidden");
+      if (nonOrphanOnly > 0) {
+        note.classList.remove("hidden");
+        note.textContent =
+          "另有 " + nonOrphanOnly + " 个已删好友/临时会话只剩调用统计，" +
+          "默认不勾选；需要清理时请手动勾选。";
+      } else {
+        note.textContent = "";
+        note.classList.add("hidden");
+      }
       return;
     }
     note.classList.remove("hidden");
@@ -758,7 +821,9 @@
     document.querySelectorAll("#clean-targets .candidate-item").forEach(function (row) {
       if (row.dataset.onlyProvider !== "1") return;
       const input = row.querySelector("input");
-      if (input) input.checked = enabled;
+      if (input) {
+        input.checked = enabled && row.dataset.status === "orphan_group";
+      }
     });
     applyCleanVisibility();
   }
@@ -779,13 +844,33 @@
     items.forEach(function (item) {
       const row = el("div", "backup-item");
       row.appendChild(el("span", "backup-id", item.backup_id || "--"));
-      row.appendChild(el("span", "backup-status " + (item.status || ""), item.status || "unknown"));
+      row.appendChild(el(
+        "span",
+        "backup-status " + (item.status || ""),
+        BACKUP_STATUS_LABELS[item.status] || item.status || "未知"
+      ));
       const counts = item.counts
-        ? Object.keys(item.counts).map(function (key) { return key + " " + item.counts[key]; }).join(" / ")
+        ? Object.keys(item.counts).map(function (key) {
+          return (TABLE_LABELS[key] || key) + " " + item.counts[key];
+        }).join(" / ")
         : "";
-      row.appendChild(el("span", "backup-counts", fmtTime(item.created_at) + (counts ? " · " + counts : "")));
-      const button = el("button", "ghost", "回滚");
+      const modeLabel = item.mode === "safety" ? "回滚前整库快照" : "";
+      row.appendChild(el(
+        "span",
+        "backup-counts",
+        fmtTime(item.created_at) + (modeLabel ? " · " + modeLabel : "") + (counts ? " · " + counts : "")
+      ));
+      const safetySnapshot = item.mode === "safety";
+      const rollbackable = !safetySnapshot && item.status !== "restored" && item.status !== "failed";
+      const button = el(
+        "button",
+        "ghost",
+        safetySnapshot
+          ? "整库快照"
+          : (rollbackable ? "回滚" : (item.status === "restored" ? "已回滚" : "不可回滚"))
+      );
       button.type = "button";
+      button.disabled = !rollbackable;
       button.addEventListener("click", function () { rollbackBackup(item.backup_id, button); });
       row.appendChild(button);
       box.appendChild(row);
@@ -911,7 +996,9 @@
     const counts = result.counts || {};
     box.appendChild(el("div", "warning-item",
       "备份 ID：" + (result.backup_id || "--") + "；删除 " + fmtNum(result.deleted) + " 行：" +
-      Object.keys(counts).map(function (key) { return key + " " + counts[key]; }).join(" / ")));
+      Object.keys(counts).map(function (key) {
+        return (TABLE_LABELS[key] || key) + " " + counts[key];
+      }).join(" / ")));
     (result.warnings || []).forEach(function (text) {
       box.appendChild(el("div", "warning-item", text));
     });
@@ -921,22 +1008,39 @@
   async function rollbackBackup(backupId, button) {
     setInlineText("rollback-status", "");
     const confirm = $("rollback-confirm").value.trim();
-    if (confirm !== "RESTORE") {
-      setInlineText("rollback-status", "请输入 RESTORE 确认回滚", "error");
+    if (confirm !== "确认回滚") {
+      setInlineText("rollback-status", "请输入“确认回滚”四个字", "error");
       $("rollback-confirm").focus();
+      return;
+    }
+    if (!window.confirm(
+      "确定回滚到备份 " + backupId + " 吗？\n" +
+      "回滚前会自动备份当前数据库；回滚后这份备份不能再次回滚。"
+    )) {
       return;
     }
     setBusy(button, true, "回滚中…");
     try {
-      const data = await apiPost("rollback", { backup_id: backupId, confirm: "RESTORE" });
+      const data = await apiPost("rollback", { backup_id: backupId, confirm: "确认回滚" });
       if (!data.ok) {
         setInlineText("rollback-status", data.error || "回滚失败", "error");
         return;
       }
       $("rollback-confirm").value = "";
-      const restored = data.result && data.result.restored ? data.result.restored : {};
-      const summary = Object.keys(restored).map(function (key) { return key + " " + restored[key]; }).join(" / ");
-      setInlineText("rollback-status", "回滚完成：" + (summary || "无行需要恢复"), "success");
+      const result = data.result || {};
+      const restored = result.restored || {};
+      const summary = Object.keys(restored).map(function (key) {
+        return (TABLE_LABELS[key] || key) + " " + restored[key];
+      }).join(" / ");
+      const extra = [];
+      if (result.skipped_files) extra.push("跳过旧插件文件 " + result.skipped_files + " 个");
+      if (result.safety_backup_id) extra.push("回滚前备份 " + result.safety_backup_id);
+      if (result.safety_warning) extra.push(result.safety_warning);
+      setInlineText(
+        "rollback-status",
+        "回滚完成：" + (summary || "无行需要恢复") + (extra.length ? "；" + extra.join("；") : ""),
+        "success"
+      );
       await loadOverview();
       await loadCleanTab();
     } catch (error) {
@@ -970,7 +1074,7 @@
       const result = item.ok ? "成功" : "失败";
       row.appendChild(el("span", "log-result " + (item.ok ? "ok" : "bad"), result));
       const detail = [];
-      if (item.event) detail.push(item.event);
+      if (item.event) detail.push(EVENT_LABELS[item.event] || item.event);
       if (item.platform_id) detail.push("平台 " + item.platform_id);
       if (item.groups != null) detail.push("群 " + item.groups);
       if (item.friends != null) detail.push("好友 " + item.friends);
@@ -1061,6 +1165,9 @@
     const form = $("settings-form");
     form.replaceChildren();
     const config = data.config || {};
+    state.previewSwitchInitialized = true;
+    const previewSwitch = $("include-provider-stats");
+    if (previewSwitch) previewSwitch.checked = Boolean(config.include_provider_stats);
 
     const scanGrid = settingsSection(
       form,
@@ -1485,9 +1592,26 @@
       event.preventDefault();
       saveSettings();
     });
-    $("settings-reload").addEventListener("click", function () {
-      setInlineText("settings-status", "");
-      loadSettings().catch(function (error) { showBanner(String(error.message || error)); });
+    $("settings-reload").addEventListener("click", async function () {
+      const button = $("settings-reload");
+      setBusy(button, true, "读取中…");
+      setInlineText("settings-status", "正在重新读取配置…");
+      try {
+        await loadSettings();
+        setInlineText(
+          "settings-status",
+          "配置已重新读取 · " + new Date().toLocaleTimeString(),
+          "success"
+        );
+      } catch (error) {
+        setInlineText(
+          "settings-status",
+          error && error.message ? error.message : String(error),
+          "error"
+        );
+      } finally {
+        setBusy(button, false, "重新读取");
+      }
     });
     $("detail-close").addEventListener("click", closeDetail);
     $("detail-modal").addEventListener("click", function (event) {

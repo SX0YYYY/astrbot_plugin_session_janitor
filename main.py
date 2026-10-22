@@ -49,6 +49,8 @@ class SessionJanitorPlugin(Star):
     async def terminate(self) -> None:
         if getattr(self, "automation", None) is not None:
             await self.automation.stop()
+        if getattr(self, "page_api", None) is not None:
+            await self.page_api.shutdown()
 
     def _resolve_db_path(self) -> Path:
         if get_astrbot_data_path is not None:

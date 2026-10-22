@@ -90,7 +90,7 @@
         "description": "通知目标 UMO",
         "type": "list",
         "default": [],
-        "hint": "留空表示管理员私聊；可填写群聊 UMO。"
+        "hint": "留空表示管理员私聊。每行一个目标：完整 UMO（default:GroupMessage:123）、GroupMessage:123；纯数字会当私聊 QQ。"
       }
     }
   },

@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.config import cfg_bool, cfg_get, cfg_int, cfg_list
+from core.db import JanitorDB, preference_targets
 from core.models import PlatformSnapshot
 from core.preview import build_preview
 from core.scanner import Scanner
@@ -230,6 +231,57 @@ class ScannerTests(unittest.TestCase):
         self.assertFalse(targets["default:GroupMessage:222"].selectable)
         self.assertEqual(result.summary["whitelisted"], 1)
         self.assertEqual(result.summary["candidates"], 2)
+
+    def test_shared_preference_row_is_skipped(self):
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "insert into preferences values (?,?,?,?,?,?,?)",
+            (
+                ago(1),
+                ago(1),
+                99,
+                "umo",
+                "",
+                "shared_key",
+                json.dumps(
+                    {
+                        "a": "default:GroupMessage:111",
+                        "b": "default:GroupMessage:222",
+                    }
+                ),
+            ),
+        )
+        con.commit()
+        con.close()
+
+        scan = Scanner(
+            self.db,
+            platform_id="default",
+            temp_session_days=30,
+            now=NOW_TS,
+        ).scan(snapshot())
+        orphan = next(
+            item for item in scan.targets if item.umo == "default:GroupMessage:222"
+        )
+        active = next(
+            item for item in scan.targets if item.umo == "default:GroupMessage:111"
+        )
+        self.assertNotIn(99, orphan.preference_row_ids)
+        self.assertNotIn(99, active.preference_row_ids)
+        self.assertTrue(
+            any("同时关联多个会话" in warning for warning in scan.warnings)
+        )
+
+        row = next(
+            item for item in JanitorDB(self.db).preferences() if item.row_id == 99
+        )
+        self.assertEqual(
+            preference_targets(row, "default"),
+            {
+                "default:GroupMessage:111",
+                "default:GroupMessage:222",
+            },
+        )
 
 
 class StoreTests(unittest.TestCase):

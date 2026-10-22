@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR))
@@ -67,6 +68,7 @@ class CleanerTests(unittest.TestCase):
         self.assertEqual(count_rows(self.db, "conversations", "user_id = ?", ("default:GroupMessage:222",)), 3)
         manifest, _ = self.store.load(result.backup_id)
         self.assertEqual(manifest["status"], "restored")
+        self.assertEqual(rollback["skipped_files"], 0)
 
     def test_provider_stats_optional(self):
         result = self.cleaner.clean(
@@ -87,15 +89,52 @@ class CleanerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.cleaner.clean(self.scan, [])
 
-    def test_rollback_restores_files_from_manifest(self):
+    def test_rollback_skips_legacy_files(self):
         sample = Path(self.temp.name) / "sample.txt"
         sample.write_text("before", encoding="utf-8")
         bundle = self.store.create("files", [])
         bundle.add_file(sample, "sample.txt")
         bundle.save()
         sample.unlink()
-        self.cleaner.rollback(bundle.backup_id)
-        self.assertEqual(sample.read_text(encoding="utf-8"), "before")
+        result = self.cleaner.rollback(bundle.backup_id)
+        self.assertFalse(sample.exists())
+        self.assertEqual(result["skipped_files"], 1)
+        self.assertEqual(result["restored_files"], 0)
+        self.assertTrue(result["safety_backup_id"])
+        self.assertTrue((self.store.root / result["safety_backup_id"]).is_dir())
+
+    def test_backup_id_path_traversal_rejected(self):
+        for backup_id in (
+            "../../outside",
+            "..\\..\\outside",
+            "20261022_143359_103d12/../../x",
+            "/etc/passwd",
+            "not-a-backup-id",
+        ):
+            with self.assertRaises(ValueError):
+                self.store.load(backup_id)
+
+    def test_rollback_twice_rejected(self):
+        result = self.cleaner.clean(
+            self.scan,
+            ["default:GroupMessage:222"],
+            include_provider_stats=False,
+        )
+        self.cleaner.rollback(result.backup_id)
+        with self.assertRaises(ValueError):
+            self.cleaner.rollback(result.backup_id)
+
+    def test_snapshot_failure_aborts_clean(self):
+        before = count_rows(self.db, "umo_aliases", "umo = ?", ("default:GroupMessage:222",))
+        with patch("core.backup.BackupBundle.snapshot_db", side_effect=OSError("磁盘已满")):
+            with self.assertRaises(RuntimeError):
+                self.cleaner.clean(
+                    self.scan,
+                    ["default:GroupMessage:222"],
+                    include_provider_stats=False,
+                )
+        after = count_rows(self.db, "umo_aliases", "umo = ?", ("default:GroupMessage:222",))
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

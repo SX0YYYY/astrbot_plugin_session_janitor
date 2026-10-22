@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .db import DbSnapshot, JanitorDB, PreferenceRow, preference_target
+from .db import DbSnapshot, JanitorDB, PreferenceRow, preference_targets
 from .models import TABLE_KEYS, PlatformSnapshot, ScanResult, Target
 from .umo import Umo, parse_umo
 
@@ -115,12 +115,17 @@ class Scanner:
             builder.add("platform_message_history", int(info.get("count") or 0))
             builder.touch(info.get("last_active"), info.get("last_active_ts"))
 
-        # preferences
+        # preferences：只有唯一归属时才挂到会话；跨会话共享的行整行删除会误伤，
+        # 因此跳过并记录 warning。
+        shared_preference_rows = 0
         for row in raw.preferences:
-            target_umo = self._preference_target(row)
-            if not target_umo:
+            targets_for_row = preference_targets(row, self.platform_id)
+            if not targets_for_row:
                 continue
-            builder = get_builder(target_umo)
+            if len(targets_for_row) > 1:
+                shared_preference_rows += 1
+                continue
+            builder = get_builder(next(iter(targets_for_row)))
             if builder is None:
                 continue
             builder.add_preference(row)
@@ -155,10 +160,14 @@ class Scanner:
         if not self.include_provider_stats:
             warnings.append("provider_stats 默认不计入清理预览（面板可单独勾选）")
         if raw.table_counts.get("platform_sessions", 0):
-            warnings.append("platform_sessions 当前均为 webchat，已跳过")
+            warnings.append("platform_sessions 已跳过（插件不处理平台会话表）")
         if skipped_message_history:
             warnings.append(
                 f"platform_message_history 中有 {skipped_message_history} 条 webchat 记录，已跳过"
+            )
+        if shared_preference_rows:
+            warnings.append(
+                f"{shared_preference_rows} 条偏好同时关联多个会话，已跳过（整行删除会误伤其他会话）"
             )
         if not targets:
             warnings.append("未发现 QQ 群/好友会话数据")
@@ -173,9 +182,6 @@ class Scanner:
             targets=targets,
             warnings=warnings,
         )
-
-    def _preference_target(self, row: PreferenceRow) -> str | None:
-        return preference_target(row, self.platform_id)
 
     def _is_whitelisted(self, umo: Umo) -> bool:
         tokens = {

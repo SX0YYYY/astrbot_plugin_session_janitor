@@ -11,7 +11,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .db import JanitorDB, _as_iso_and_ts, preference_target
+from .db import JanitorDB, _as_iso_and_ts, preference_targets
+from .sqlite_utils import readonly_uri
 
 PREVIEW_CHARS = 400
 MAX_MESSAGES = 20
@@ -20,14 +21,21 @@ MAX_MESSAGES = 20
 def _preview(value: Any, limit: int = PREVIEW_CHARS) -> str:
     if value is None:
         return ""
-    text = str(value).replace("\r\n", "\n").strip()
+    if isinstance(value, (dict, list)):
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(value)
+    else:
+        text = str(value)
+    text = text.replace("\r\n", "\n").strip()
     if len(text) > limit:
         return text[:limit] + "…"
     return text
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=10)
+    connection = sqlite3.connect(readonly_uri(path), uri=True, timeout=10)
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -148,9 +156,9 @@ def build_session_detail(
         detail["warnings"].append("未找到 AstrBot 主库 data_v4.db")
 
     try:
-        snapshot = JanitorDB(db).snapshot()
-        for row in snapshot.preferences:
-            if preference_target(row, platform_id) != umo:
+        for row in JanitorDB(db).preferences():
+            target_umos = preference_targets(row, platform_id)
+            if umo not in target_umos:
                 continue
             detail["preferences"].append(
                 {
@@ -161,9 +169,9 @@ def build_session_detail(
                     "value_length": len(row.value_text or ""),
                     "value_preview": _preview(row.value_text),
                     "last_active": row.last_active,
+                    "shared": len(target_umos) > 1,
                 }
             )
-        detail["warnings"].extend(snapshot.warnings)
     except Exception as exc:  # 详情是辅助视图，读取失败不影响主流程
         detail["warnings"].append(f"读取偏好记录失败：{exc}")
 

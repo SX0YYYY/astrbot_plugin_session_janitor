@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import shutil
 import sqlite3
 import uuid
@@ -15,6 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from .sqlite_utils import readonly_uri
+
+BACKUP_ID_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{6}$")
 
 
 def _jsonable(value: Any) -> Any:
@@ -34,6 +39,15 @@ def _now_id() -> str:
     return f"{stamp}_{uuid.uuid4().hex[:6]}"
 
 
+def safe_backup_id(value: object) -> str:
+    """校验备份 ID；只允许本插件生成的“时间戳_随机串”格式。"""
+
+    text = str(value or "").strip()
+    if not BACKUP_ID_RE.fullmatch(text):
+        raise ValueError("备份 ID 格式不正确")
+    return text
+
+
 @dataclass
 class BackupBundle:
     backup_id: str
@@ -51,7 +65,8 @@ class BackupBundle:
 
         source_path = Path(db_path)
         target = self.root / "data_v4.db"
-        source = sqlite3.connect(f"file:{source_path.as_posix()}?mode=ro", uri=True)
+        source = sqlite3.connect(readonly_uri(source_path), uri=True, timeout=30)
+        source.execute("PRAGMA busy_timeout=30000")
         try:
             target_conn = sqlite3.connect(target)
             try:
@@ -82,6 +97,8 @@ class BackupBundle:
     def add_file(self, source: str | Path, relative: str) -> None:
         source_path = Path(source)
         relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ValueError("备份文件相对路径不安全")
         destination = self.files_dir / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, destination)
@@ -110,9 +127,23 @@ class BackupBundle:
         os.replace(tmp_manifest, self.root / "manifest.json")
 
     def restore_files(self) -> int:
+        """恢复旧版本备份里的插件文件。
+
+        V0.4 起清理不再备份插件文件，回滚也不会调用本方法；保留它仅用于
+        手动处理旧备份。调用前仍校验相对路径，避免备份包内路径穿越。
+        """
+
         restored = 0
+        files_root = self.files_dir.resolve()
         for item in self.files:
-            source = self.files_dir / item["relative"]
+            relative = Path(str(item.get("relative") or ""))
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            source = (self.files_dir / relative).resolve()
+            try:
+                source.relative_to(files_root)
+            except ValueError:
+                continue
             target = Path(item["source"])
             if not source.is_file():
                 continue
@@ -168,10 +199,22 @@ class BackupStore:
         }
         return BackupBundle(backup_id=backup_id, root=root, manifest=manifest)
 
+    def _path(self, backup_id: object) -> Path:
+        text = safe_backup_id(backup_id)
+        root = self.root.resolve()
+        target = (self.root / text).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("备份路径不安全") from exc
+        if target == root or target.parent != root:
+            raise ValueError("备份路径不安全")
+        return target
+
     def list(self, limit: int = 50) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         for path in sorted(self.root.iterdir(), reverse=True):
-            if not path.is_dir():
+            if not path.is_dir() or not BACKUP_ID_RE.fullmatch(path.name):
                 continue
             manifest_path = path / "manifest.json"
             if not manifest_path.is_file():
@@ -180,38 +223,73 @@ class BackupStore:
                 data = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict):
+            if isinstance(data, dict) and str(data.get("backup_id") or "") == path.name:
                 items.append(data)
             if len(items) >= limit:
                 break
         return items
 
     def load(self, backup_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        root = self.root / backup_id
+        text = safe_backup_id(backup_id)
+        root = self._path(text)
         manifest_path = root / "manifest.json"
         rows_path = root / "rows.json"
         if not manifest_path.is_file():
             raise FileNotFoundError("备份不存在")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        rows = {}
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ValueError("备份清单格式不正确") from exc
+        if not isinstance(manifest, dict):
+            raise ValueError("备份清单格式不正确")
+        if str(manifest.get("backup_id") or "") != text:
+            raise ValueError("备份清单与备份 ID 不一致")
+        rows: dict[str, Any] = {}
         if rows_path.is_file():
-            rows = json.loads(rows_path.read_text(encoding="utf-8"))
+            try:
+                loaded = json.loads(rows_path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                raise ValueError("备份数据格式不正确") from exc
+            if isinstance(loaded, dict):
+                rows = loaded
         return manifest, rows
 
-    def mark_restored(self, manifest: dict[str, Any], restored: dict[str, Any]) -> None:
-        root = self.root / manifest["backup_id"]
+    def mark_restored(
+        self,
+        manifest: dict[str, Any],
+        restored: dict[str, Any],
+        skipped_files: int = 0,
+        safety_backup_id: str | None = None,
+    ) -> None:
+        root = self._path(manifest.get("backup_id"))
         manifest["status"] = "restored"
         manifest["restored_at"] = datetime.now(timezone.utc).isoformat()
         manifest["restored"] = restored
+        manifest["skipped_files"] = int(skipped_files or 0)
+        manifest["safety_backup_id"] = safety_backup_id
         tmp = root / "manifest.json.tmp"
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump(manifest, handle, ensure_ascii=False, indent=2)
         os.replace(tmp, root / "manifest.json")
 
-    def prune(self, retain: int) -> None:
+    def prune(self, retain: int, keep: set[str] | None = None) -> None:
         retain = max(1, int(retain))
-        dirs = [path for path in sorted(self.root.iterdir(), reverse=True) if path.is_dir()]
-        for path in dirs[retain:]:
+        protected = set(keep or ())
+        dirs = [
+            path
+            for path in sorted(self.root.iterdir(), reverse=True)
+            if path.is_dir() and BACKUP_ID_RE.fullmatch(path.name)
+        ]
+        for path in dirs:
+            manifest_path = path / "manifest.json"
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("status") in {"restored", "pending"}:
+                protected.add(path.name)
+        deletable = [path for path in dirs if path.name not in protected]
+        for path in deletable[retain:]:
             try:
                 shutil.rmtree(path)
             except OSError:

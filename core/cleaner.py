@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .backup import BackupBundle, BackupStore
+from .sqlite_utils import readonly_uri
 
 ProgressCallback = Callable[[str, int, str], None]
 
@@ -69,7 +70,14 @@ class CoreCleaner:
         try:
             bundle.snapshot_db(self.db_path)
         except Exception as exc:
-            warnings.append(f"整库快照失败：{exc}")
+            message = f"整库快照失败，已中止清理：{exc}"
+            bundle.manifest["status"] = "failed"
+            bundle.manifest["error"] = message
+            try:
+                bundle.save()
+            except Exception:
+                pass
+            raise RuntimeError(message) from exc
         _emit(progress, "备份并删除数据", 15, f"共 {len(targets)} 个会话")
 
         connection = self._connect(write=True)
@@ -110,7 +118,7 @@ class CoreCleaner:
         bundle.manifest["counts"] = counts
         bundle.save()
         if finalize:
-            self.backup_store.prune(retain)
+            self.backup_store.prune(retain, keep={bundle.backup_id})
         _emit(progress, "清理完成", 100, f"共删除 {sum(counts.values())} 行")
         return CleanResult(
             backup_id=bundle.backup_id,
@@ -122,6 +130,25 @@ class CoreCleaner:
 
     def rollback(self, backup_id: str) -> dict[str, Any]:
         manifest, rows = self.backup_store.load(backup_id)
+        if manifest.get("status") == "restored":
+            raise ValueError("该备份已经回滚过，不能重复回滚")
+        if manifest.get("status") == "failed":
+            raise ValueError("该备份生成失败，不能用于回滚")
+        if manifest.get("mode") == "safety":
+            raise ValueError("这是回滚前的整库快照，不能通过逐行回滚恢复")
+
+        safety_backup_id: str | None = None
+        safety_warning: str | None = None
+        try:
+            safety = self.backup_store.create("safety", [])
+            safety.snapshot_db(self.db_path)
+            safety.manifest["status"] = "completed"
+            safety.manifest["reason"] = "rollback_pre_snapshot"
+            safety.save()
+            safety_backup_id = safety.backup_id
+        except Exception as exc:
+            safety_warning = f"回滚前备份当前库失败：{exc}"
+
         connection = self._connect(write=True)
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -133,19 +160,20 @@ class CoreCleaner:
         finally:
             connection.close()
 
-        bundle = BackupBundle(
-            backup_id=backup_id,
-            root=self.backup_store.root / backup_id,
-            manifest=manifest,
-            rows=rows,
-            files=list(manifest.get("files") or []),
+        skipped_files = len(manifest.get("files") or [])
+        self.backup_store.mark_restored(
+            manifest,
+            restored,
+            skipped_files=skipped_files,
+            safety_backup_id=safety_backup_id,
         )
-        restored_files = bundle.restore_files()
-        self.backup_store.mark_restored(manifest, restored)
         return {
             "backup_id": backup_id,
             "restored": restored,
-            "restored_files": restored_files,
+            "restored_files": 0,
+            "skipped_files": skipped_files,
+            "safety_backup_id": safety_backup_id,
+            "safety_warning": safety_warning,
         }
 
     def _validate_targets(
@@ -225,8 +253,7 @@ class CoreCleaner:
             connection = sqlite3.connect(self.db_path, timeout=30)
             connection.execute("PRAGMA busy_timeout=30000")
             return connection
-        uri = f"file:{self.db_path.as_posix()}?mode=ro"
-        return sqlite3.connect(uri, uri=True, timeout=30)
+        return sqlite3.connect(readonly_uri(self.db_path), uri=True, timeout=30)
 
 
 def _chunks(values: list[int], size: int) -> list[list[int]]:

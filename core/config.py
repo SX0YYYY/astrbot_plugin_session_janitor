@@ -22,13 +22,28 @@ def cfg_int(source: Any, key: str, default: int) -> int:
         return default
 
 
-def cfg_bool(source: Any, key: str, default: bool) -> bool:
-    value = cfg_get(source, key, default)
+def strict_bool(value: Any, default: bool = False) -> bool:
+    """严格解析布尔值；字符串 "false" 不会被误判成 True。"""
+
     if isinstance(value, bool):
         return value
+    if isinstance(value, (int, float)):
+        return value != 0
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "是", "开"}
-    return bool(value)
+        return value.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "是",
+            "开",
+            "开启",
+        }
+    return default
+
+
+def cfg_bool(source: Any, key: str, default: bool) -> bool:
+    return strict_bool(cfg_get(source, key, default), default)
 
 
 def cfg_list(source: Any, key: str, default: list[Any] | None = None) -> list[Any]:

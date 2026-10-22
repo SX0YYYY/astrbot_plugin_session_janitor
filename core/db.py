@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .sqlite_utils import readonly_uri
 from .umo import (
     GROUP_MESSAGE,
     find_umos_in_text,
@@ -45,12 +46,23 @@ class PreferenceRow:
     group_ids: set[str] = field(default_factory=set)
 
 
-def preference_target(row: PreferenceRow, platform_id: str) -> str | None:
-    """给一条偏好记录选一个主归属，避免同一行被多个会话重复计数。"""
+def preference_targets(row: PreferenceRow, platform_id: str) -> set[str]:
+    """返回一条偏好记录关联到的全部会话。
+
+    - `analysis_*` 的 key 是权威归属，只按群号归属，忽略 value 里的其他 UMO；
+    - `scope_id` 本身就是 UMO 时，按 scope_id 归属；
+    - 其他情况从 value 里提取所有匹配平台的 UMO。
+
+    调用方只有在目标集合恰好只有一个会话时才应把整行挂到该会话；
+    多个目标意味着这一行被多个会话共享，整行删除可能误伤其他会话。
+    """
 
     if row.group_ids:
-        group_id = sorted(row.group_ids)[0]
-        return make_umo(platform_id, GROUP_MESSAGE, group_id)
+        return {
+            make_umo(platform_id, GROUP_MESSAGE, str(group_id))
+            for group_id in row.group_ids
+            if str(group_id or "").strip()
+        }
 
     parsed_scope = parse_umo(row.scope_id)
     if (
@@ -58,17 +70,25 @@ def preference_target(row: PreferenceRow, platform_id: str) -> str | None:
         and not parsed_scope.is_webchat
         and parsed_scope.platform_id == platform_id
     ):
-        return parsed_scope.raw
+        return {parsed_scope.raw}
 
-    for umo in sorted(row.umos):
+    targets: set[str] = set()
+    for umo in row.umos:
         parsed = parse_umo(umo)
         if (
             parsed is not None
             and not parsed.is_webchat
             and parsed.platform_id == platform_id
         ):
-            return parsed.raw
-    return None
+            targets.add(parsed.raw)
+    return targets
+
+
+def preference_target(row: PreferenceRow, platform_id: str) -> str | None:
+    """兼容旧调用：只有一个目标时返回它，多个目标时返回 None。"""
+
+    targets = preference_targets(row, platform_id)
+    return next(iter(targets)) if len(targets) == 1 else None
 
 
 @dataclass
@@ -131,8 +151,7 @@ class JanitorDB:
         self.path = Path(path)
 
     def _connect(self) -> sqlite3.Connection:
-        uri = f"file:{self.path.as_posix()}?mode=ro"
-        connection = sqlite3.connect(uri, uri=True, timeout=10)
+        connection = sqlite3.connect(readonly_uri(self.path), uri=True, timeout=10)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -173,6 +192,18 @@ class JanitorDB:
         finally:
             connection.close()
         return {"exists": True, "tables": tables, "counts": counts, "columns": columns}
+
+    def preferences(self) -> list[PreferenceRow]:
+        """只读取 preferences 表，供会话详情使用，避免读取整库。"""
+
+        if not self.path.is_file():
+            return []
+        connection = self._connect()
+        try:
+            columns = {"preferences": self._columns(connection, "preferences")}
+            return self._read_preferences(connection, columns, [])
+        finally:
+            connection.close()
 
     def snapshot(self) -> DbSnapshot:
         warnings: list[str] = []
