@@ -33,6 +33,7 @@ from .core.config import (
     cfg_get,
     cfg_int,
     cfg_list,
+    effective_scan_interval,
     strict_bool,
 )
 from .core.db import JanitorDB
@@ -44,6 +45,11 @@ from .core.preview import TABLE_LABELS, build_preview
 from .core.scanner import Scanner
 
 ProgressCallback = Callable[[str, int, str], None]
+
+# 白名单只接受两类值：纯数字群号/QQ 号，或完整 UMO（平台:消息类型:数字 ID）。
+WHITELIST_ITEM_RE = re.compile(
+    r"^(?:\d+|[^:\s]+:(?:Group|Friend)Message:-?\d+)$"
+)
 
 
 def jsonify(payload: Any) -> Any:
@@ -1314,14 +1320,12 @@ class PageApi:
         )
         whitelist = as_list("whitelist")
         for item in whitelist:
-            if item.isdigit():
-                continue
-            if ":" in item and not any(ch.isspace() for ch in item):
-                continue
-            raise ValueError(
-                f"白名单格式不正确：{item}；"
-                "每行填群号/QQ（纯数字）或完整会话 ID（含冒号）"
-            )
+            if not WHITELIST_ITEM_RE.fullmatch(item):
+                raise ValueError(
+                    f"白名单格式不正确：{item}；"
+                    "每行填群号/QQ（纯数字）或完整会话 ID"
+                    "（例如 default:GroupMessage:123456）"
+                )
         return {
             "scan": {
                 "platform_id": platform_id,
@@ -1352,13 +1356,7 @@ class PageApi:
 
     def _config_view(self) -> dict[str, Any]:
         config = self.plugin.config or {}
-        interval = cfg_int(
-            config,
-            "automation.scan_interval_minutes",
-            DEFAULT_SCAN_INTERVAL_MINUTES,
-        )
-        if interval <= 0:
-            interval = DEFAULT_SCAN_INTERVAL_MINUTES
+        interval = effective_scan_interval(config)
         return {
             "version": PLUGIN_VERSION,
             "platform_id": str(cfg_get(config, "scan.platform_id", "default") or "default"),

@@ -32,7 +32,7 @@
         "description": "永不清理的会话",
         "type": "list",
         "default": [],
-        "hint": "每行一个群号、QQ 号或完整会话 ID；命中的会话不会进入清理候选。"
+        "hint": "每行一个群号、QQ 号或完整会话 ID（例如 default:GroupMessage:123456）；命中的会话不会进入清理候选。"
       },
       "scan_timeout_seconds": {
         "description": "读取群/好友列表超时（秒）",
@@ -66,7 +66,7 @@
         "slider": {
           "min": 1,
           "max": 1440,
-          "step": 10
+          "step": 1
         },
         "hint": "开启后按该间隔执行；关闭自动清理请用上面的开关。建议 60 分钟以上。"
       },

@@ -328,5 +328,17 @@ class RollbackSafetyTests(unittest.TestCase):
             self.cleaner.rollback(bundle.backup_id)
 
 
+class DashboardConfirmTests(unittest.TestCase):
+    def test_dashboard_uses_in_page_confirm_modal(self):
+        app_js = (PLUGIN_DIR / "views/dashboard/app.js").read_text(encoding="utf-8")
+        index_html = (PLUGIN_DIR / "views/dashboard/index.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("window.confirm", app_js)
+        self.assertIn("function showDialog", app_js)
+        self.assertIn("showRollbackConflict", app_js)
+        self.assertIn('id="confirm-modal"', index_html)
+
+
 if __name__ == "__main__":
     unittest.main()

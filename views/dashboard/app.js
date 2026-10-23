@@ -163,6 +163,106 @@
     return node;
   }
 
+  let activeDialogClose = null;
+
+  function showDialog(options) {
+    const opts = options || {};
+    return new Promise(function (resolve) {
+      const modal = $("confirm-modal");
+      const titleNode = $("confirm-title");
+      const bodyNode = $("confirm-body");
+      const actionsNode = $("confirm-actions");
+      if (!modal || !titleNode || !bodyNode || !actionsNode) {
+        resolve(opts.cancelValue !== undefined ? opts.cancelValue : null);
+        return;
+      }
+      if (activeDialogClose) {
+        activeDialogClose(opts.cancelValue !== undefined ? opts.cancelValue : null);
+      }
+      titleNode.textContent = opts.title || "请确认";
+      bodyNode.replaceChildren();
+      bodyNode.appendChild(el("p", "confirm-message", opts.message || ""));
+      actionsNode.replaceChildren();
+      let settled = false;
+      function close(value) {
+        if (settled) return;
+        settled = true;
+        if (activeDialogClose === close) activeDialogClose = null;
+        modal.classList.add("hidden");
+        if (!document.querySelector(".modal:not(.hidden)")) {
+          document.body.style.overflow = "";
+        }
+        document.removeEventListener("keydown", onKey);
+        resolve(value);
+      }
+      function onKey(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close(opts.cancelValue !== undefined ? opts.cancelValue : null);
+        }
+      }
+      (opts.buttons || []).forEach(function (item) {
+        const button = el("button", item.kind || "ghost", item.label);
+        button.type = "button";
+        button.addEventListener("click", function () { close(item.value); });
+        actionsNode.appendChild(button);
+      });
+      const backdrop = modal.querySelector(".modal-backdrop");
+      if (backdrop) {
+        backdrop.onclick = function () {
+          close(opts.cancelValue !== undefined ? opts.cancelValue : null);
+        };
+      }
+      activeDialogClose = close;
+      modal.classList.remove("hidden");
+      document.body.style.overflow = "hidden";
+      document.addEventListener("keydown", onKey);
+      let focusNode = actionsNode.querySelector("button.primary");
+      if (opts.focus === "cancel") {
+        focusNode = actionsNode.querySelector("button.ghost") || focusNode;
+      }
+      if (!focusNode) focusNode = actionsNode.querySelector("button");
+      if (focusNode) focusNode.focus();
+    });
+  }
+
+  function showConfirm(options) {
+    const opts = options || {};
+    return showDialog({
+      title: opts.title || "请确认",
+      message: opts.message || "",
+      cancelValue: false,
+      buttons: [
+        { label: opts.cancelText || "取消", value: false, kind: "ghost" },
+        {
+          label: opts.okText || "确定",
+          value: true,
+          kind: opts.danger ? "danger" : "primary",
+        },
+      ],
+      focus: opts.danger ? "cancel" : "primary",
+    });
+  }
+
+  function showRollbackConflict(conflicts) {
+    const summary = Object.keys(conflicts || {}).map(function (key) {
+      return (TABLE_LABELS[key] || key) + " " + conflicts[key] + " 行";
+    }).join(" / ");
+    return showDialog({
+      title: "回滚冲突",
+      message:
+        "检测到回滚会覆盖同主键的新数据：\n" + (summary || "未知数量") +
+        "\n\n请选择处理方式：跳过冲突只恢复其余行；强制覆盖会用备份行替换当前行。",
+      cancelValue: null,
+      focus: "primary",
+      buttons: [
+        { label: "取消本次回滚", value: null, kind: "ghost" },
+        { label: "跳过冲突", value: "skip", kind: "primary" },
+        { label: "强制覆盖", value: "overwrite", kind: "danger" },
+      ],
+    });
+  }
+
   function badge(status, label) {
     return el("span", "badge status-" + status, label || STATUS_LABELS[status] || status);
   }
@@ -1245,10 +1345,13 @@
         $("rollback-confirm").focus();
         return;
       }
-      if (!window.confirm(
-        "确定回滚到备份 " + backupId + " 吗？\n" +
-        "回滚前会自动备份当前数据库；回滚后这份备份不能再次回滚。"
-      )) {
+      if (!await showConfirm({
+        title: "确认回滚",
+        message: "确定回滚到备份 " + backupId + " 吗？\n" +
+          "回滚前会自动备份当前数据库；回滚后这份备份不能再次回滚。",
+        okText: "继续回滚",
+        danger: true,
+      })) {
         return;
       }
     }
@@ -1259,15 +1362,10 @@
       const data = await apiPost("rollback", body);
       if (data && data.requires_confirmation) {
         const conflicts = data.conflicts || {};
-        const summary = Object.keys(conflicts).map(function (key) {
-          return (TABLE_LABELS[key] || key) + " " + conflicts[key] + " 行";
-        }).join(" / ");
-        const overwrite = window.confirm(
-          "检测到回滚会覆盖同主键的新数据：\n" + (summary || "未知数量") + "\n\n" +
-          "点击“确定”=强制覆盖这些新数据；点击“取消”=跳过冲突行，只恢复其余数据。"
-        );
+        const choice = await showRollbackConflict(conflicts);
         setBusy(button, false, "回滚");
-        return rollbackBackup(backupId, button, overwrite ? "overwrite" : "skip");
+        if (!choice) return;
+        return rollbackBackup(backupId, button, choice);
       }
       if (!data.ok) {
         setInlineText("rollback-status", data.error || "回滚失败", "error");
@@ -1577,8 +1675,8 @@
     ));
     scopeGrid.appendChild(settingsField(
       "永不清理的会话",
-      textAreaInput("whitelist", config.whitelist, "每行一个群号、QQ 号或完整会话 ID"),
-      "命中的会话不会进入清理候选；每行填群号/QQ（纯数字）或完整会话 ID（含冒号）。",
+      textAreaInput("whitelist", config.whitelist, "每行一个群号、QQ 号或完整会话 ID（例如 default:GroupMessage:123456）"),
+      "命中的会话不会进入清理候选；每行填群号/QQ（纯数字）或完整会话 ID（例如 default:GroupMessage:123456）。",
       { full: true }
     ));
 
@@ -1609,7 +1707,7 @@
     ));
     autoGrid.appendChild(settingsField(
       "自动清理间隔（分钟）",
-      numberInput("scan_interval_minutes", config.scan_interval_minutes, 1, 1440, 10),
+      numberInput("scan_interval_minutes", config.scan_interval_minutes, 1, 1440, 1),
       "开启后按该间隔执行；关闭自动清理请用上面的开关。建议 60 分钟以上。",
       { full: true }
     ));
@@ -1780,10 +1878,13 @@
   }
 
   async function runAutoCleanOnce(button, statusNode) {
-    if (!window.confirm(
-      "立即按当前设置执行一次自动清理？\n" +
-      "只处理已退群会话；默认不删除调用统计；执行前会备份整库。"
-    )) {
+    if (!await showConfirm({
+      title: "立即运行一次",
+      message: "立即按当前设置执行一次自动清理？\n" +
+        "只处理已退群会话；默认不删除调用统计；执行前会备份整库。",
+      okText: "立即运行",
+      danger: true,
+    })) {
       return;
     }
     setBusy(button, true, "运行中…");
@@ -1820,7 +1921,11 @@
   }
 
   async function sendTestNotify(button, statusNode) {
-    if (!window.confirm("发送一条测试通知到当前通知目标？")) {
+    if (!await showConfirm({
+      title: "发送测试通知",
+      message: "发送一条测试通知到当前通知目标？",
+      okText: "发送",
+    })) {
       return;
     }
     setBusy(button, true, "发送中…");
@@ -1886,12 +1991,12 @@
   function validateSettings(payload) {
     clearFieldErrors();
     const invalidWhitelist = (payload.whitelist || []).filter(function (item) {
-      return !/^\d+$/.test(item) && !(item.includes(":") && !/\s/.test(item));
+      return !/^(?:\d+|[^:\s]+:(?:Group|Friend)Message:-?\d+)$/.test(item);
     });
     if (invalidWhitelist.length) {
       const message =
         "白名单格式不正确：" + invalidWhitelist[0] +
-        "；每行填群号/QQ（纯数字）或完整会话 ID（含冒号）";
+        "；每行填群号/QQ（纯数字）或完整会话 ID（例如 default:GroupMessage:123456）";
       setFieldError("whitelist", message);
       return message;
     }
@@ -2072,7 +2177,12 @@
 
   async function refreshCurrent() {
     if (state.tab === "settings" && state.settingsDirty &&
-        !window.confirm("有未保存的修改，确定放弃并刷新？")) {
+        !(await showConfirm({
+          title: "放弃未保存的修改",
+          message: "有未保存的修改，确定放弃并刷新？",
+          okText: "放弃并刷新",
+          danger: true,
+        }))) {
       return;
     }
     const button = $("refresh-btn");
@@ -2200,7 +2310,12 @@
       setSettingsDirty(true);
     });
     $("settings-discard").addEventListener("click", async function () {
-      if (state.settingsDirty && !window.confirm("放弃未保存的修改，重新读取已保存的配置？")) {
+      if (state.settingsDirty && !(await showConfirm({
+        title: "放弃未保存的修改",
+        message: "放弃未保存的修改，重新读取已保存的配置？",
+        okText: "放弃修改",
+        danger: true,
+      }))) {
         return;
       }
       const button = $("settings-reload");
@@ -2224,7 +2339,12 @@
       }
     });
     $("settings-reload").addEventListener("click", async function () {
-      if (state.settingsDirty && !window.confirm("有未保存的修改，确定放弃并重新读取？")) {
+      if (state.settingsDirty && !(await showConfirm({
+        title: "放弃未保存的修改",
+        message: "有未保存的修改，确定放弃并重新读取？",
+        okText: "放弃并重新读取",
+        danger: true,
+      }))) {
         return;
       }
       const button = $("settings-reload");

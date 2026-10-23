@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <title>会话清道夫</title>
-  <link rel="stylesheet" href="./style.css?v=0.7.3" />
+  <link rel="stylesheet" href="./style.css?v=0.7.4" />
 </head>
 <body>
   <div class="page">
@@ -14,12 +14,12 @@
         <div class="logo" aria-hidden="true">清</div>
         <div class="brand-text">
           <h1>会话清道夫</h1>
-          <p id="subtitle">先体检，再清理；每次删除都可回滚 · v0.7.3</p>
+          <p id="subtitle">先体检，再清理；每次删除都可回滚 · v0.7.4</p>
         </div>
       </div>
       <div class="top-actions">
         <span class="inline-status" id="global-status"></span>
-        <span class="pill" id="version">v0.7.3</span>
+        <span class="pill" id="version">v0.7.4</span>
         <button id="scan-btn" class="primary" type="button"
           title="重新读取当前 QQ 群/好友列表并扫描核心库，更新所有标签页的数据。">开始扫描</button>
         <button id="refresh-btn" class="ghost" type="button"
@@ -278,7 +278,7 @@
               <h2>插件设置</h2>
               <p class="muted">第一次使用保持默认即可。保存后立即生效；自动清理默认关闭。</p>
             </div>
-            <span class="pill soft">v0.7.3</span>
+            <span class="pill soft">v0.7.4</span>
           </div>
           <div class="settings-assurance" aria-label="插件行为说明">
             <span>只处理 AstrBot 核心库</span>
@@ -329,6 +329,17 @@
     </div>
   </div>
 
-  <script src="./app.js?v=0.7.3" defer></script>
+  <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <div class="modal-backdrop" data-close="confirm"></div>
+    <div class="modal-card confirm-card">
+      <div class="modal-head">
+        <h2 id="confirm-title">请确认</h2>
+      </div>
+      <div id="confirm-body" class="modal-body"></div>
+      <div id="confirm-actions" class="modal-actions"></div>
+    </div>
+  </div>
+
+  <script src="./app.js?v=0.7.4" defer></script>
 </body>
 </html>

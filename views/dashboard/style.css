@@ -892,6 +892,20 @@ button.small { padding: 4px 9px; font-size: 12px; border-radius: 8px; }
   padding: 16px 18px 22px;
   overflow-y: auto;
 }
+.confirm-card { width: min(480px, 100%); }
+.confirm-message {
+  margin: 0;
+  white-space: pre-line;
+  line-height: 1.65;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 18px 18px;
+  flex-wrap: wrap;
+}
+.modal-actions button { min-width: 96px; }
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

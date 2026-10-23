@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-0.7.3-blue)
+![Version](https://img.shields.io/badge/version-0.7.4-blue)
 ![AstrBot](https://img.shields.io/badge/AstrBot-%3E%3D4.29.0%2C%3C5-6f42c1)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -130,7 +130,7 @@ AstrBot 核心库会保留已退群、好友列表外（疑似已删好友）、
 |---|---|---|
 | 临时会话阈值（天） | 30 | 好友列表外、超过这么多天没活跃的私聊，标记为过期临时会话 |
 | 预览时默认包含调用统计 | 关闭 | 打开后清理预览默认计入调用统计（`provider_stats`） |
-| 永不清理的会话 | 空 | 每行一个群号、QQ 号或完整会话 ID |
+| 永不清理的会话 | 空 | 每行一个群号、QQ 号或完整会话 ID（例如 `default:GroupMessage:123456`） |
 | 开启定时自动清理 | 关闭 | 开启后按间隔自动扫描并清理已退群会话 |
 | 自动清理间隔（分钟） | 60 | 开启后按该间隔执行；关闭自动清理请用上面的开关 |
 | 自动清理也删除调用统计 | 关闭 | 打开后自动清理会连调用统计一起删 |
@@ -169,7 +169,7 @@ AstrBot 核心库的 `conversations` 表只保存**真正和机器人进行过 L
 检查：
 
 - 「开启定时自动清理」是否打开；
-- 「自动清理间隔」是否填写（0 不再表示关闭；关闭请用上面的开关）；
+- 「自动清理间隔」是否在 1–1440 分钟之间（关闭自动清理请用上面的开关）；
 - 是否有「已退群」且仍有核心数据的会话；
 - 最近是否出现群/好友列表骤降（插件会跳过自动清理并写日志）；
 - 「扫描日志」里的最近一次自动清理结果。
@@ -232,7 +232,7 @@ python -m unittest discover -s tests -v
 node --check views/dashboard/app.js
 ```
 
-当前测试 68 项；GitHub Actions 在 push 和 pull request 时运行同一套检查。
+当前测试 74 项；GitHub Actions 在 push 和 pull request 时运行同一套检查。
 
 回滚只恢复五张核心表并校验列名；相关回归测试在 `tests/test_regressions.py`。
 

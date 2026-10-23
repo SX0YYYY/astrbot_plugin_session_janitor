@@ -18,7 +18,13 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .config import DEFAULT_SCAN_INTERVAL_MINUTES, cfg_bool, cfg_int
+from .config import (
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    cfg_bool,
+    cfg_get,
+    cfg_int,
+    effective_scan_interval,
+)
 
 
 def _float(value: Any) -> float | None:
@@ -62,15 +68,11 @@ class AutoCleaner:
 
         config = getattr(self.plugin, "config", None) or {}
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-        interval = cfg_int(
-            config,
-            "automation.scan_interval_minutes",
-            DEFAULT_SCAN_INTERVAL_MINUTES,
-        )
-        if enabled and interval > 0:
+        interval = effective_scan_interval(config)
+        if enabled:
             # 恢复配置键，避免 _loop 第一次 tick 把持久化的 next_run
             # 重置成“现在 + 一个完整间隔”。
-            self._state_key = (True, int(interval))
+            self._state_key = (True, interval)
             next_run = _float(data.get("next_run"))
             if next_run is not None:
                 self._next_run = next_run
@@ -122,12 +124,8 @@ class AutoCleaner:
         """配置保存后立即重算下次运行时间，不必等 20 秒轮询。"""
         config = self.plugin.config or {}
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-        interval = cfg_int(
-            config,
-            "automation.scan_interval_minutes",
-            DEFAULT_SCAN_INTERVAL_MINUTES,
-        )
-        if not enabled or interval <= 0:
+        interval = effective_scan_interval(config)
+        if not enabled:
             changed = self._next_run is not None or self._state_key is not None
             self._next_run = None
             self._state_key = None
@@ -143,22 +141,16 @@ class AutoCleaner:
     def status(self) -> dict[str, Any]:
         config = self.plugin.config or {}
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-        interval = cfg_int(
-            config,
-            "automation.scan_interval_minutes",
-            DEFAULT_SCAN_INTERVAL_MINUTES,
-        )
-        # 旧配置可能还是 0；0 不再表示“关闭”，显示时按新默认值处理。
-        display_interval = interval if interval > 0 else DEFAULT_SCAN_INTERVAL_MINUTES
+        interval = effective_scan_interval(config)
         return {
             "enabled": bool(enabled),
-            "interval_minutes": int(display_interval),
+            "interval_minutes": int(interval),
             "include_provider_stats": cfg_bool(
                 config, "automation.include_provider_stats", False
             ),
             "running": self._running,
             "last_run": _iso(self._last_run),
-            "next_run": _iso(self._next_run) if enabled and interval > 0 else None,
+            "next_run": _iso(self._next_run) if enabled else None,
             "last_result": self._last_result,
         }
 
@@ -178,7 +170,49 @@ class AutoCleaner:
         self._save_state()
         return result
 
+    async def migrate_legacy_interval(self) -> None:
+        """把旧配置里的 0/负数间隔归一化为默认 60，并尽量写回配置文件。
+
+        0.7.3 起「0 不再表示关闭」，但升级用户可能仍保留 0 + 开关打开的旧配置。
+        只在内存和显示层兜底会让状态卡显示“每 60 分钟”却永不执行，所以这里
+        做一次真正的迁移，并让调度器从第一次循环起就使用有效间隔。
+        """
+
+        config = getattr(self.plugin, "config", None)
+        if config is None:
+            return
+        if (
+            cfg_int(
+                config,
+                "automation.scan_interval_minutes",
+                DEFAULT_SCAN_INTERVAL_MINUTES,
+            )
+            > 0
+        ):
+            return
+        try:
+            automation = config.setdefault("automation", {})
+        except Exception:
+            automation = cfg_get(config, "automation", None)
+        if not isinstance(automation, dict):
+            return
+        automation["scan_interval_minutes"] = DEFAULT_SCAN_INTERVAL_MINUTES
+        save = getattr(config, "save_config_async", None)
+        if callable(save):
+            try:
+                await save()
+                logger.info(
+                    "会话清道夫：旧配置的自动清理间隔已迁移为 %d 分钟",
+                    DEFAULT_SCAN_INTERVAL_MINUTES,
+                )
+            except Exception:
+                logger.warning(
+                    "会话清道夫：旧配置间隔写回失败，本次按 %d 分钟执行",
+                    DEFAULT_SCAN_INTERVAL_MINUTES,
+                )
+
     async def _loop(self) -> None:
+        await self.migrate_legacy_interval()
         while True:
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=20)
@@ -191,15 +225,11 @@ class AutoCleaner:
             try:
                 config = self.plugin.config or {}
                 enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-                interval = cfg_int(
-            config,
-            "automation.scan_interval_minutes",
-            DEFAULT_SCAN_INTERVAL_MINUTES,
-        )
+                interval = effective_scan_interval(config)
                 key = (bool(enabled), int(interval))
                 now = time.time()
 
-                if not enabled or interval <= 0:
+                if not enabled:
                     changed = self._next_run is not None or self._state_key is not None
                     self._next_run = None
                     self._state_key = None

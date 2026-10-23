@@ -338,6 +338,32 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("白名单格式", result["error"])
 
+    async def test_settings_accepts_valid_whitelist(self):
+        fake_request._json = {
+            "whitelist": [
+                "123456",
+                "default:GroupMessage:123456",
+                "default:FriendMessage:3781297206",
+            ]
+        }
+        result = await self.api.settings_save()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            result["config"]["whitelist"],
+            [
+                "123456",
+                "default:GroupMessage:123456",
+                "default:FriendMessage:3781297206",
+            ],
+        )
+
+    async def test_settings_rejects_loose_whitelist(self):
+        for item in ("随便:乱写", "a:b:c:d", "default:GroupMessage:abc"):
+            fake_request._json = {"whitelist": [item]}
+            result = await self.api.settings_save()
+            self.assertFalse(result["ok"], item)
+            self.assertIn("白名单格式", result["error"])
+
     async def test_clean_job_progress(self):
         async def fake_fetch(context, platform_id="default", timeout=10.0):
             return snapshot()
@@ -584,6 +610,49 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(second._next_run)
         self.assertAlmostEqual(second._next_run, saved_next, delta=1.0)
         self.assertGreater(second._next_run, time.time())
+
+    async def test_legacy_zero_interval_refresh_schedules(self):
+        self.plugin.config["automation"] = {
+            "auto_clean_enabled": True,
+            "scan_interval_minutes": 0,
+            "include_provider_stats": False,
+        }
+        cleaner = AutoCleaner(self.plugin, self.api)
+        cleaner.refresh()
+        self.assertEqual(cleaner._state_key, (True, 60))
+        self.assertIsNotNone(cleaner._next_run)
+        status = cleaner.status()
+        self.assertTrue(status["enabled"])
+        self.assertEqual(status["interval_minutes"], 60)
+        self.assertIsNotNone(status["next_run"])
+
+    async def test_legacy_zero_interval_migrates_config(self):
+        self.plugin.config["automation"] = {
+            "auto_clean_enabled": True,
+            "scan_interval_minutes": 0,
+            "include_provider_stats": False,
+        }
+        cleaner = AutoCleaner(self.plugin, self.api)
+        await cleaner.migrate_legacy_interval()
+        self.assertEqual(
+            self.plugin.config["automation"]["scan_interval_minutes"], 60
+        )
+
+    async def test_legacy_zero_interval_restores_next_run(self):
+        self.plugin.config["automation"] = {
+            "auto_clean_enabled": True,
+            "scan_interval_minutes": 0,
+            "include_provider_stats": False,
+        }
+        first = AutoCleaner(self.plugin, self.api)
+        saved_next = time.time() + 300
+        first._next_run = saved_next
+        first._save_state()
+
+        second = AutoCleaner(self.plugin, self.api)
+        self.assertEqual(second._state_key, (True, 60))
+        self.assertIsNotNone(second._next_run)
+        self.assertAlmostEqual(second._next_run, saved_next, delta=1.0)
 
 
 if __name__ == "__main__":
