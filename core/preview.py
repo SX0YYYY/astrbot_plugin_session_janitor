@@ -80,7 +80,7 @@ def build_preview(
         int((target.get("counts") or {}).get("provider_stats") or 0)
         for target in targets
     ):
-        warnings.append("provider_stats 未计入本次预览；需要时在预览页单独勾选")
+        warnings.append("调用统计未计入本次预览；需要时在预览页单独勾选")
     if not targets:
         warnings.append("没有可清理的候选；请确认平台列表已成功读取")
 

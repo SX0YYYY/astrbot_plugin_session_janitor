@@ -158,7 +158,7 @@ class Scanner:
         tables = self._build_tables(raw, targets)
         warnings = list(raw.warnings) + list(snapshot.warnings)
         if not self.include_provider_stats:
-            warnings.append("provider_stats 默认不计入清理预览（面板可单独勾选）")
+            warnings.append("调用统计默认不计入清理预览（面板可单独勾选）")
         if raw.table_counts.get("platform_sessions", 0):
             warnings.append("platform_sessions 已跳过（插件不处理平台会话表）")
         if skipped_message_history:
@@ -263,10 +263,10 @@ class Scanner:
             if cleanable_rows == 0 and not self.include_provider_stats:
                 notes.add(
                     "只剩调用统计；默认不清理，"
-                    "需要时在预览/执行清理页勾选“包含 provider_stats”"
+                    "需要时在预览/执行清理页勾选“包含调用统计”"
                 )
             else:
-                notes.add("provider_stats 默认不清理，可在预览中单独勾选")
+                notes.add("调用统计默认不清理，可在预览中单独勾选")
         if builder.counts.get("preferences"):
             notes.add("preferences 命中 analysis_* 或会话配置键")
         if builder.counts.get("platform_message_history"):

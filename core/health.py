@@ -297,7 +297,7 @@ def build_health(
     elif delete_rows == 0:
         warnings.append(
             f"候选 {scan_stats['candidates']} 个，但默认可清理 0 行："
-            "它们只剩 provider_stats 调用统计；需要清理时勾选“包含 provider_stats”"
+            "它们只剩调用统计；需要清理时勾选“包含调用统计”"
         )
     if exists and delete_rows > 0 and not averages:
         warnings.append("无法取得核心表行宽，暂时无法估算可回收空间")
