@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+# 自动清理间隔的默认值。0 不再表示“关闭”，关闭请用 auto_clean_enabled 开关。
+DEFAULT_SCAN_INTERVAL_MINUTES = 60
+
 
 def cfg_get(source: Any, key: str, default: Any = None) -> Any:
     current = source

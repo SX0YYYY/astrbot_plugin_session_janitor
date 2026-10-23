@@ -1,14 +1,14 @@
 {
   "scan": {
-    "description": "扫描设置",
+    "description": "清理范围",
     "type": "object",
-    "hint": "扫描阶段只读；默认参数适用于大多数情况。",
+    "hint": "决定哪些会话会进入清理候选。第一次使用保持默认即可。",
     "items": {
       "platform_id": {
-        "description": "平台实例 ID",
+        "description": "QQ 平台实例",
         "type": "string",
         "default": "default",
-        "hint": "AstrBot 平台配置里的 ID；面板会自动检测已加载的平台实例，aiocqhttp 默认是 default。"
+        "hint": "通常保持 default；只有多个 QQ 机器人时才需要改。面板会列出检测到的 aiocqhttp 实例。"
       },
       "temp_session_days": {
         "description": "临时会话阈值（天）",
@@ -19,22 +19,23 @@
           "max": 365,
           "step": 1
         },
-        "hint": "好友列表之外、最后活跃超过该天数的 FriendMessage 视为过期临时会话。"
+        "hint": "好友列表外、超过这么多天没有活跃的私聊，标记为过期临时会话。"
       },
       "include_provider_stats": {
-        "description": "预览时包含 provider_stats",
+        "description": "预览时默认包含调用统计",
         "type": "bool",
         "default": false,
-        "hint": "provider_stats 是调用统计历史，删除会丢失旧群用量；默认不计入预览。"
+        "obvious_hint": true,
+        "hint": "调用统计是模型用量流水，删除只影响历史用量，不影响聊天记录；默认关闭。"
       },
       "whitelist": {
-        "description": "白名单",
+        "description": "永不清理的会话",
         "type": "list",
         "default": [],
-        "hint": "填写完整 UMO（default:GroupMessage:123）、群号/QQ 或 GroupMessage:123；命中的会话永不清理。"
+        "hint": "每行一个群号、QQ 号或完整会话 ID；命中的会话不会进入清理候选。"
       },
       "scan_timeout_seconds": {
-        "description": "平台列表超时（秒）",
+        "description": "读取群/好友列表超时（秒）",
         "type": "int",
         "default": 10,
         "slider": {
@@ -42,64 +43,67 @@
           "max": 60,
           "step": 1
         },
-        "hint": "get_group_list / get_friend_list 的超时时间；超时或空列表会立即停止扫描。"
+        "hint": "网络慢时可调大；超时会停止扫描，不会产生候选。"
       }
     }
   },
   "automation": {
-    "description": "自动清理",
+    "description": "定时自动清理",
     "type": "object",
-    "hint": "默认关闭；开启后按间隔扫描，只清理已退群会话，不动已删好友/临时会话。",
+    "hint": "默认关闭。开启后只清理已退群会话，执行前自动备份；间隔默认 60 分钟。",
     "items": {
       "auto_clean_enabled": {
-        "description": "启用自动清理",
+        "description": "开启定时自动清理",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭；开启后按扫描间隔自动执行。"
+        "obvious_hint": true,
+        "hint": "建议先手动扫描一次确认结果，再开启。"
       },
       "scan_interval_minutes": {
-        "description": "自动扫描间隔（分钟）",
+        "description": "自动清理间隔（分钟）",
         "type": "int",
-        "default": 0,
+        "default": 60,
         "slider": {
-          "min": 0,
+          "min": 1,
           "max": 1440,
           "step": 10
         },
-        "hint": "0 表示只手动扫描；自动清理启用后按该间隔执行扫描。"
+        "hint": "开启后按该间隔执行；关闭自动清理请用上面的开关。建议 60 分钟以上。"
       },
       "include_provider_stats": {
-        "description": "自动清理也删除 provider_stats",
+        "description": "自动清理也删除调用统计",
         "type": "bool",
         "default": false,
-        "hint": "默认关闭；打开后自动清理会连调用统计一起删。只处理已退群会话。"
+        "hint": "默认关闭；开启后自动清理会连调用统计一起删。只处理已退群会话。"
       }
     }
   },
   "notify": {
-    "description": "执行通知",
+    "description": "自动清理后通知",
     "type": "object",
+    "hint": "自动清理执行后发送摘要；手动清理不会发通知。通知失败不影响清理。",
     "items": {
       "enabled": {
-        "description": "自动清理后发送通知",
+        "description": "发送通知",
         "type": "bool",
         "default": true,
-        "hint": "默认开启；自动清理删除数据后发送摘要，通知失败不影响清理。"
+        "hint": "默认开启。"
       },
       "targets": {
-        "description": "通知目标 UMO",
+        "description": "通知发送到",
         "type": "list",
         "default": [],
-        "hint": "留空表示管理员私聊。每行一个目标：完整 UMO（default:GroupMessage:123）、GroupMessage:123；纯数字会当私聊 QQ。"
+        "hint": "每行一个群号或 QQ 号；留空时发送给 AstrBot 管理员。"
       }
     }
   },
   "backup": {
-    "description": "备份设置",
+    "description": "备份与磁盘",
     "type": "object",
+    "hint": "每次清理前生成完整数据库快照；备份越多占用越大。",
     "items": {
       "retain": {
-        "description": "备份保留份数",
+        "description": "保留备份份数",
         "type": "int",
         "default": 5,
         "slider": {
@@ -107,7 +111,8 @@
           "max": 30,
           "step": 1
         },
-        "hint": "执行删除前会先备份；备份含完整 data_v4.db 快照（含私密数据），请限制备份目录权限；超过份数时清理最旧备份，已回滚备份也按份数封顶。"
+        "obvious_hint": true,
+        "hint": "超过份数会删除最旧的备份；备份含完整数据库，请限制目录权限。"
       }
     }
   }

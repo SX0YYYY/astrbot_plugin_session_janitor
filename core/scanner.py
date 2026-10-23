@@ -254,10 +254,10 @@ class Scanner:
                 )
             else:
                 status = "missing_friend"
-                notes.add("不在好友列表，未超过临时会话阈值（可能是已删好友或临时会话）")
+                notes.add("不在好友列表，未超过临时会话阈值（统一按好友列表外处理）")
             selectable = status in {"expired_temp", "missing_friend"}
             default_selected = False
-            notes.add("历史数据无法区分已删好友与临时会话；默认不勾选")
+            notes.add("插件无法区分删好友和换号；好友列表外/临时会话默认不勾选")
 
         if builder.counts.get("provider_stats"):
             if cleanable_rows == 0 and not self.include_provider_stats:

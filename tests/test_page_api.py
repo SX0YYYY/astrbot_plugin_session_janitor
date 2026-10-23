@@ -223,7 +223,7 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["result"]["counts"]["conversations"], 3)
         self.assertEqual(result["result"]["counts"]["preferences"], 1)
         self.assertNotIn("provider_stats", result["result"]["counts"])
-        # 已删好友/临时会话不在自动清理范围内
+        # 好友列表外/临时会话不在自动清理范围内
         self.assertEqual(result["result"]["targets"], ["default:GroupMessage:222"])
         logs = await self.api.logs()
         self.assertEqual(logs["items"][0]["event"], "auto_clean")
@@ -237,7 +237,7 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
             "include_provider_stats": True,
             "whitelist": ["222", "333"],
             "auto_clean_enabled": False,
-            "scan_interval_minutes": 0,
+            "scan_interval_minutes": 60,
             "notify_enabled": True,
             "notify_targets": [],
         }
@@ -247,6 +247,7 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["config"]["backup_retain"], 7)
         self.assertTrue(result["config"]["include_provider_stats"])
         self.assertEqual(result["config"]["whitelist"], ["222", "333"])
+        self.assertEqual(result["config"]["scan_interval_minutes"], 60)
 
     async def test_notify_auto_clean(self):
         sent = []
@@ -315,7 +316,27 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         }
         result = await self.api.settings_save()
         self.assertFalse(result["ok"])
-        self.assertIn("扫描间隔", result["error"])
+        self.assertIn("自动清理间隔", result["error"])
+
+    async def test_settings_interval_zero_rejected_even_when_disabled(self):
+        fake_request._json = {
+            "auto_clean_enabled": False,
+            "scan_interval_minutes": 0,
+        }
+        result = await self.api.settings_save()
+        self.assertFalse(result["ok"])
+        self.assertIn("自动清理间隔", result["error"])
+
+    async def test_settings_default_interval_is_60(self):
+        result = await self.api.settings()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["config"]["scan_interval_minutes"], 60)
+
+    async def test_settings_rejects_invalid_whitelist(self):
+        fake_request._json = {"whitelist": ["不是群号"]}
+        result = await self.api.settings_save()
+        self.assertFalse(result["ok"])
+        self.assertIn("白名单格式", result["error"])
 
     async def test_clean_job_progress(self):
         async def fake_fetch(context, platform_id="default", timeout=10.0):

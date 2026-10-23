@@ -9,7 +9,7 @@ STATUS_LABELS = {
     "active": "活跃",
     "orphan_group": "已退群",
     "expired_temp": "过期临时会话",
-    "missing_friend": "好友列表外",
+    "missing_friend": "好友列表外（疑似已删好友）",
     "whitelisted": "白名单",
     "skipped": "已跳过",
 }

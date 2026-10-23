@@ -27,7 +27,14 @@ except Exception:  # 通知是可选项，缺少消息组件时只写日志
 
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .core.cleaner import CoreCleaner, RollbackConflictError
-from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list, strict_bool
+from .core.config import (
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    cfg_bool,
+    cfg_get,
+    cfg_int,
+    cfg_list,
+    strict_bool,
+)
 from .core.db import JanitorDB
 from .core.detail import build_conversation_detail, build_session_detail
 from .core.health import build_health, human_bytes
@@ -341,11 +348,11 @@ class PageApi:
                 "readonly": False,
                 "config": self._config_view(),
                 "notes": [
-                    "本页保存后立即写入 AstrBot 插件配置，下次扫描/预览使用新配置。",
-                    "会话清道夫只清理 AstrBot 核心库的数据，不读取也不修改任何插件数据。",
-                    "已退群默认勾选；已删好友 / 过期临时会话默认不勾选，需要手动选择。",
-                    "自动清理只处理「已退群」的默认可清理会话；已删好友/临时会话不会自动清。",
-                    "自动清理默认关闭；开启后按间隔执行，执行结果会写入扫描日志并按通知配置发送。",
+                    "保存后立即写入 AstrBot 插件配置，下一次扫描/预览使用新配置。",
+                    "已退群默认勾选；好友列表外/过期临时会话默认不勾选，需要手动选择。",
+                    "自动清理只处理已退群会话；好友列表外/临时会话不会自动清理。",
+                    "自动清理默认关闭；关闭请用开关，间隔默认 60 分钟，0 不再表示关闭。",
+                    "每次清理前都会生成完整数据库快照，可在执行清理页回滚。",
                 ],
             }
         )
@@ -375,8 +382,8 @@ class PageApi:
                     {
                         "ok": False,
                         "error": (
-                            f"平台 ID {platform_id} 不是 aiocqhttp（OneBot/NapCat），"
-                            "无法读取群列表；请选择带“支持”标记的平台"
+                            f"平台 {platform_id} 不是 QQ（aiocqhttp），读不到群/好友列表；"
+                            "请选择带“支持”标记的平台"
                         ),
                     }
                 )
@@ -556,13 +563,16 @@ class PageApi:
             limit = 20
         items = self.plugin.backup_store.list(limit)
         try:
+            total_count = len(self.plugin.backup_store.list(1000))
             total = await asyncio.to_thread(self.plugin.backup_store.total_size)
         except Exception:
+            total_count = len(items)
             total = 0
         return jsonify(
             {
                 "ok": True,
                 "items": items,
+                "total_count": total_count,
                 "total_bytes": total,
                 "total_human": human_bytes(total),
             }
@@ -1294,21 +1304,34 @@ class PageApi:
 
         platform_id = str(body.get("platform_id") or "default").strip() or "default"
         auto_enabled = as_bool("auto_clean_enabled", False)
+        # 0 不再表示“关闭”；关闭自动清理请使用 auto_clean_enabled 开关。
         auto_interval = as_int(
-            "scan_interval_minutes", 0, 0, 1440, "自动扫描间隔"
+            "scan_interval_minutes",
+            DEFAULT_SCAN_INTERVAL_MINUTES,
+            1,
+            1440,
+            "自动清理间隔",
         )
-        if auto_enabled and auto_interval <= 0:
-            raise ValueError("开启自动清理时，扫描间隔必须大于 0 分钟")
+        whitelist = as_list("whitelist")
+        for item in whitelist:
+            if item.isdigit():
+                continue
+            if ":" in item and not any(ch.isspace() for ch in item):
+                continue
+            raise ValueError(
+                f"白名单格式不正确：{item}；"
+                "每行填群号/QQ（纯数字）或完整会话 ID（含冒号）"
+            )
         return {
             "scan": {
                 "platform_id": platform_id,
                 "temp_session_days": as_int(
-                    "temp_session_days", 30, 1, 365, "临时会话阈值"
+                    "temp_session_days", 30, 1, 365, "临时会话阈值（天）"
                 ),
                 "include_provider_stats": as_bool("include_provider_stats", False),
-                "whitelist": as_list("whitelist"),
+                "whitelist": whitelist,
                 "scan_timeout_seconds": as_int(
-                    "scan_timeout_seconds", 10, 3, 60, "平台列表超时"
+                    "scan_timeout_seconds", 10, 3, 60, "读取群/好友列表超时"
                 ),
             },
             "automation": {
@@ -1323,12 +1346,19 @@ class PageApi:
                 "targets": as_list("notify_targets"),
             },
             "backup": {
-                "retain": as_int("backup_retain", 5, 1, 30, "备份保留份数"),
+                "retain": as_int("backup_retain", 5, 1, 30, "保留备份份数"),
             },
         }
 
     def _config_view(self) -> dict[str, Any]:
         config = self.plugin.config or {}
+        interval = cfg_int(
+            config,
+            "automation.scan_interval_minutes",
+            DEFAULT_SCAN_INTERVAL_MINUTES,
+        )
+        if interval <= 0:
+            interval = DEFAULT_SCAN_INTERVAL_MINUTES
         return {
             "version": PLUGIN_VERSION,
             "platform_id": str(cfg_get(config, "scan.platform_id", "default") or "default"),
@@ -1341,9 +1371,7 @@ class PageApi:
             "auto_clean_enabled": cfg_bool(
                 config, "automation.auto_clean_enabled", False
             ),
-            "scan_interval_minutes": cfg_int(
-                config, "automation.scan_interval_minutes", 0
-            ),
+            "scan_interval_minutes": interval,
             "auto_clean_include_provider_stats": cfg_bool(
                 config, "automation.include_provider_stats", False
             ),

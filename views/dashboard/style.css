@@ -692,6 +692,116 @@ button.danger {
 }
 .settings-foot .panel-hint { margin-top: 0; }
 
+.text-link {
+  color: var(--primary);
+  font-size: 13px;
+  text-decoration: none;
+  border-bottom: 1px dashed currentColor;
+  padding-bottom: 1px;
+}
+.text-link:hover { border-bottom-style: solid; }
+
+.settings-assurance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 4px;
+}
+.settings-assurance span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+}
+.settings-assurance span::before {
+  content: "✓";
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.settings-advanced {
+  padding: 0;
+  overflow: hidden;
+}
+.settings-advanced > summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 18px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.settings-advanced > summary::-webkit-details-marker { display: none; }
+.settings-advanced > summary::before {
+  content: "▸";
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.settings-advanced[open] > summary::before { transform: rotate(90deg); }
+.settings-advanced > summary:hover { background: var(--primary-soft); }
+.settings-advanced > .settings-grid { padding: 0 18px 18px; }
+.settings-advanced-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.settings-advanced-copy strong { font-size: 15px; }
+.settings-advanced-copy small { color: var(--muted); font-size: 12px; }
+
+.settings-savebar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--primary);
+  border-radius: 12px;
+  background: var(--card);
+  box-shadow: 0 12px 32px rgba(23, 43, 77, 0.18);
+}
+.settings-savebar[hidden] { display: none; }
+.settings-dirty {
+  color: var(--warn);
+  font-size: 13px;
+  font-weight: 600;
+}
+.settings-dirty::before { content: "● "; }
+.settings-savebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-field.has-error input,
+.settings-field.has-error textarea,
+.settings-field.has-error select,
+.settings-switch.has-error {
+  border-color: var(--danger);
+}
+.settings-field.has-error input:focus,
+.settings-field.has-error textarea:focus,
+.settings-field.has-error select:focus {
+  box-shadow: 0 0 0 3px var(--danger-soft);
+}
+.field-error {
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 /* 就地反馈与进度 */
 .inline-status {
   font-size: 12px;
@@ -874,4 +984,12 @@ button.small { padding: 4px 9px; font-size: 12px; border-radius: 8px; }
   .automation-grid { grid-template-columns: 1fr; }
   .settings-section { padding: 14px; }
   .settings-switch { align-items: center; }
+  .settings-advanced { padding: 0; }
+  .settings-advanced > summary { padding: 14px; }
+  .settings-advanced > .settings-grid { padding: 0 14px 14px; }
+  .settings-savebar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .settings-savebar-actions { justify-content: flex-end; }
 }

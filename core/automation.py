@@ -1,7 +1,7 @@
 """自动清理调度器。
 
 - `automation.auto_clean_enabled` 打开后，按 `scan_interval_minutes` 周期执行。
-- 只处理「已退群」且默认可清理的会话，不动已删好友/临时会话。
+- 只处理「已退群」且默认可清理的会话，不动好友列表外/临时会话。
 - 默认不删除 provider_stats；可在自动清理设置里单独打开。
 - 执行后按 `notify` 配置发送摘要；通知失败不影响清理结果。
 """
@@ -18,7 +18,7 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .config import cfg_bool, cfg_int
+from .config import DEFAULT_SCAN_INTERVAL_MINUTES, cfg_bool, cfg_int
 
 
 def _float(value: Any) -> float | None:
@@ -62,7 +62,11 @@ class AutoCleaner:
 
         config = getattr(self.plugin, "config", None) or {}
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-        interval = cfg_int(config, "automation.scan_interval_minutes", 0)
+        interval = cfg_int(
+            config,
+            "automation.scan_interval_minutes",
+            DEFAULT_SCAN_INTERVAL_MINUTES,
+        )
         if enabled and interval > 0:
             # 恢复配置键，避免 _loop 第一次 tick 把持久化的 next_run
             # 重置成“现在 + 一个完整间隔”。
@@ -118,7 +122,11 @@ class AutoCleaner:
         """配置保存后立即重算下次运行时间，不必等 20 秒轮询。"""
         config = self.plugin.config or {}
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-        interval = cfg_int(config, "automation.scan_interval_minutes", 0)
+        interval = cfg_int(
+            config,
+            "automation.scan_interval_minutes",
+            DEFAULT_SCAN_INTERVAL_MINUTES,
+        )
         if not enabled or interval <= 0:
             changed = self._next_run is not None or self._state_key is not None
             self._next_run = None
@@ -135,10 +143,16 @@ class AutoCleaner:
     def status(self) -> dict[str, Any]:
         config = self.plugin.config or {}
         enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-        interval = cfg_int(config, "automation.scan_interval_minutes", 0)
+        interval = cfg_int(
+            config,
+            "automation.scan_interval_minutes",
+            DEFAULT_SCAN_INTERVAL_MINUTES,
+        )
+        # 旧配置可能还是 0；0 不再表示“关闭”，显示时按新默认值处理。
+        display_interval = interval if interval > 0 else DEFAULT_SCAN_INTERVAL_MINUTES
         return {
             "enabled": bool(enabled),
-            "interval_minutes": int(interval),
+            "interval_minutes": int(display_interval),
             "include_provider_stats": cfg_bool(
                 config, "automation.include_provider_stats", False
             ),
@@ -177,7 +191,11 @@ class AutoCleaner:
             try:
                 config = self.plugin.config or {}
                 enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
-                interval = cfg_int(config, "automation.scan_interval_minutes", 0)
+                interval = cfg_int(
+            config,
+            "automation.scan_interval_minutes",
+            DEFAULT_SCAN_INTERVAL_MINUTES,
+        )
                 key = (bool(enabled), int(interval))
                 now = time.time()
 

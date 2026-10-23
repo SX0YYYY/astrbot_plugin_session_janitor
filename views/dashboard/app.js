@@ -13,7 +13,7 @@
     active: "活跃",
     orphan_group: "已退群",
     expired_temp: "过期临时会话",
-    missing_friend: "好友列表外",
+    missing_friend: "好友列表外（疑似已删好友）",
     whitelisted: "白名单",
   };
   const TYPE_LABELS = { group: "群聊", friend: "好友/私聊" };
@@ -41,6 +41,7 @@
     cleanLoaded: false,
     logsLoaded: false,
     settingsLoaded: false,
+    settingsDirty: false,
     previewSwitchInitialized: false,
     cleanJob: null,
   };
@@ -1015,7 +1016,7 @@
       if (nonOrphanOnly > 0) {
         note.classList.remove("hidden");
         note.textContent =
-          "另有 " + nonOrphanOnly + " 个已删好友/临时会话只剩调用统计，" +
+          "另有 " + nonOrphanOnly + " 个好友列表外/临时会话只剩调用统计，" +
           "默认不勾选；需要清理时请手动勾选。";
       } else {
         note.textContent = "";
@@ -1346,8 +1347,10 @@
 
   function settingsField(label, input, hint, options) {
     const opts = options || {};
+    const fieldName = opts.fieldName || (input && input.name ? input.name : "");
     if (opts.switch) {
       const row = el("label", "settings-switch" + (opts.full ? " full" : ""));
+      row.dataset.fieldName = fieldName;
       const copy = el("div", "switch-copy");
       copy.appendChild(el("strong", "", label));
       if (hint) copy.appendChild(el("small", "", hint));
@@ -1356,24 +1359,70 @@
       return row;
     }
     const field = el("label", "settings-field" + (opts.full ? " full" : ""));
+    field.dataset.fieldName = fieldName;
     field.appendChild(el("span", "settings-label", label));
     field.appendChild(input);
     if (hint) field.appendChild(el("small", "field-hint", hint));
+    const error = el("small", "field-error");
+    error.hidden = true;
+    field.appendChild(error);
     return field;
   }
 
-  function settingsSection(form, title, description) {
-    const section = el("section", "card settings-section");
-    const head = el("div", "settings-section-head");
-    const copy = el("div");
-    copy.appendChild(el("h3", "", title));
-    if (description) copy.appendChild(el("p", "", description));
-    head.appendChild(copy);
-    section.appendChild(head);
+  function settingsSection(form, title, description, options) {
+    const opts = options || {};
+    const section = document.createElement(opts.advanced ? "details" : "section");
+    section.className = "card settings-section" + (opts.advanced ? " settings-advanced" : "");
+    if (opts.advanced) {
+      const summary = document.createElement("summary");
+      const copy = el("div", "settings-advanced-copy");
+      copy.appendChild(el("strong", "", title));
+      if (description) copy.appendChild(el("small", "", description));
+      summary.appendChild(copy);
+      section.appendChild(summary);
+    } else {
+      const head = el("div", "settings-section-head");
+      const copy = el("div");
+      copy.appendChild(el("h3", "", title));
+      if (description) copy.appendChild(el("p", "", description));
+      head.appendChild(copy);
+      section.appendChild(head);
+    }
     const grid = el("div", "settings-grid");
     section.appendChild(grid);
     form.appendChild(section);
     return grid;
+  }
+
+  function setSettingsDirty(dirty) {
+    state.settingsDirty = Boolean(dirty);
+    const bar = $("settings-savebar");
+    if (bar) bar.hidden = !state.settingsDirty;
+    const label = $("settings-dirty");
+    if (label) label.textContent = state.settingsDirty ? "有未保存的修改" : "";
+  }
+
+  function clearFieldErrors() {
+    document.querySelectorAll("#settings-form .field-error").forEach(function (node) {
+      node.hidden = true;
+      node.textContent = "";
+    });
+    document.querySelectorAll("#settings-form .has-error").forEach(function (node) {
+      node.classList.remove("has-error");
+    });
+  }
+
+  function setFieldError(name, message) {
+    const field = document.querySelector('#settings-form [data-field-name="' + name + '"]');
+    if (!field) return;
+    field.classList.add("has-error");
+    const error = field.querySelector(".field-error");
+    if (error) {
+      error.textContent = message;
+      error.hidden = false;
+    }
+    const input = field.querySelector("input, textarea, select");
+    if (input && typeof input.focus === "function") input.focus();
   }
 
   function textInput(name, value, placeholder) {
@@ -1502,96 +1551,90 @@
     }
     state.settingsLoaded = true;
     const form = $("settings-form");
+    const previousAdvanced = form.querySelector(".settings-advanced");
+    const advancedOpen = Boolean(previousAdvanced && previousAdvanced.open);
     form.replaceChildren();
     const config = data.config || {};
     state.previewSwitchInitialized = true;
     const previewSwitch = $("include-provider-stats");
     if (previewSwitch) previewSwitch.checked = Boolean(config.include_provider_stats);
 
-    const scanGrid = settingsSection(
-      form,
-      "扫描设置",
-      "控制平台列表读取、临时会话判定和备份策略。"
-    );
-    const platformPicker = await buildPlatformPicker(config.platform_id || "default");
-    scanGrid.appendChild(settingsField(
-      "平台实例 ID",
-      platformPicker,
-      "自动检测 AstrBot 已加载的平台实例；修改后下次扫描生效。"
-    ));
-    scanGrid.appendChild(settingsField(
-      "临时会话阈值（天）",
-      numberInput("temp_session_days", config.temp_session_days, 1, 365, 1),
-      "好友列表外、超过该天数未活跃的会话视为过期临时会话。"
-    ));
-    scanGrid.appendChild(settingsField(
-      "平台列表超时（秒）",
-      numberInput("scan_timeout_seconds", config.scan_timeout_seconds, 3, 60, 1),
-      "get_group_list / get_friend_list 的超时；超时即停止扫描。"
-    ));
-    scanGrid.appendChild(settingsField(
-      "备份保留份数",
-      numberInput("backup_retain", config.backup_retain, 1, 30, 1),
-      "每次清理前生成备份，超过份数自动删除最旧的备份。"
-    ));
-
     const scopeGrid = settingsSection(
       form,
       "清理范围",
-      "决定哪些核心库数据会被清理；插件数据一律不读取。"
+      "决定哪些会话会进入清理候选。第一次使用保持默认即可。"
     );
     scopeGrid.appendChild(settingsField(
-      "白名单",
-      textAreaInput("whitelist", config.whitelist, "每行一个 UMO、群号或 QQ"),
-      "命中的会话永不清理。支持完整 UMO、群号/QQ、GroupMessage:123。",
-      { full: true }
+      "临时会话阈值（天）",
+      numberInput("temp_session_days", config.temp_session_days, 1, 365, 1),
+      "好友列表外、超过这么多天没有活跃的私聊，标记为过期临时会话。"
     ));
     scopeGrid.appendChild(settingsField(
-      "预览默认包含 provider_stats",
+      "预览时默认包含调用统计",
       checkInput("include_provider_stats", config.include_provider_stats),
-      "调用统计默认不清理；开启后预览默认计入。",
+      "调用统计是模型用量流水，删除只影响历史用量，不影响聊天记录；默认关闭。",
       { switch: true, full: true }
     ));
+    scopeGrid.appendChild(settingsField(
+      "永不清理的会话",
+      textAreaInput("whitelist", config.whitelist, "每行一个群号、QQ 号或完整会话 ID"),
+      "命中的会话不会进入清理候选；每行填群号/QQ（纯数字）或完整会话 ID（含冒号）。",
+      { full: true }
+    ));
+
+    const backupGrid = settingsSection(
+      form,
+      "备份与磁盘",
+      "每次清理前生成完整数据库快照；备份越多占用越大。"
+    );
+    backupGrid.appendChild(settingsField(
+      "保留备份份数",
+      numberInput("backup_retain", config.backup_retain, 1, 30, 1),
+      "超过份数会删除最旧的备份；每份备份约等于整库大小。"
+    ));
+    const backupSummary = el("p", "panel-hint backup-summary", "正在读取备份占用…");
+    backupSummary.id = "settings-backup-summary";
+    backupGrid.parentElement.appendChild(backupSummary);
 
     const autoGrid = settingsSection(
       form,
-      "自动清理",
-      "定时扫描并清理已退群会话；默认关闭，不影响已删好友/临时会话。"
+      "定时自动清理",
+      "默认关闭。开启后只清理已退群会话，执行前自动备份。"
     );
     autoGrid.appendChild(settingsField(
-      "启用自动清理",
+      "开启定时自动清理",
       checkInput("auto_clean_enabled", config.auto_clean_enabled),
-      "开启后按下面的间隔自动扫描并清理已退群会话。",
+      "建议先手动扫描一次确认结果，再开启自动清理。",
       { switch: true, full: true }
     ));
     autoGrid.appendChild(settingsField(
-      "自动清理包含 provider_stats",
-      checkInput("auto_clean_include_provider_stats", config.auto_clean_include_provider_stats),
-      "默认关闭；打开后自动清理会连调用统计一起删。",
-      { switch: true, full: true }
-    ));
-    autoGrid.appendChild(settingsField(
-      "自动扫描间隔（分钟）",
-      numberInput("scan_interval_minutes", config.scan_interval_minutes, 0, 1440, 10),
-      "0 表示不自动执行；开启自动清理后建议 60–1440 分钟。",
+      "自动清理间隔（分钟）",
+      numberInput("scan_interval_minutes", config.scan_interval_minutes, 1, 1440, 10),
+      "开启后按该间隔执行；关闭自动清理请用上面的开关。建议 60 分钟以上。",
       { full: true }
+    ));
+    autoGrid.appendChild(settingsField(
+      "自动清理也删除调用统计",
+      checkInput("auto_clean_include_provider_stats", config.auto_clean_include_provider_stats),
+      "默认关闭；开启后自动清理会连调用统计一起删。只处理已退群会话。",
+      { switch: true, full: true }
     ));
 
     const notifyGrid = settingsSection(
       form,
-      "执行后通知",
-      "自动清理删除数据后发送摘要；通知失败不影响清理。"
+      "自动清理后通知",
+      "自动清理执行后发送摘要；手动清理不会发通知。通知失败不影响清理。"
     );
     notifyGrid.appendChild(settingsField(
-      "启用通知",
+      "发送通知",
       checkInput("notify_enabled", config.notify_enabled),
-      "删除数据后发送摘要；通知失败只记日志。",
+      "默认开启；通知发送失败只会记日志。",
       { switch: true, full: true }
     ));
     notifyGrid.appendChild(settingsField(
-      "通知目标",
-      textAreaInput("notify_targets", config.notify_targets, "每行一个群聊或私聊 UMO"),
-      "留空时发送给 AstrBot admins_id 里的数字管理员 QQ。",
+      "通知发送到",
+      textAreaInput("notify_targets", config.notify_targets, "每行一个群号或 QQ 号"),
+      "每行一个群号或 QQ 号；留空时发送给 AstrBot 管理员。",
       { full: true }
     ));
     const notifyTestField = el("div", "settings-field full");
@@ -1605,8 +1648,53 @@
     notifyTestField.appendChild(testStatus);
     notifyGrid.appendChild(notifyTestField);
 
+    const advancedGrid = settingsSection(
+      form,
+      "高级设置",
+      "平台实例和读取超时；通常不需要改。",
+      { advanced: true }
+    );
+    const platformPicker = await buildPlatformPicker(config.platform_id || "default");
+    advancedGrid.appendChild(settingsField(
+      "QQ 平台实例",
+      platformPicker,
+      "通常保持 default；只有多个 QQ 机器人时才需要改。修改后下次扫描生效。",
+      { fieldName: "platform_id" }
+    ));
+    advancedGrid.appendChild(settingsField(
+      "读取群/好友列表超时（秒）",
+      numberInput("scan_timeout_seconds", config.scan_timeout_seconds, 3, 60, 1),
+      "网络慢时可调大；超时会停止扫描，不会产生候选。"
+    ));
+    const advanced = form.querySelector(".settings-advanced");
+    if (advanced) advanced.open = advancedOpen;
+
     warningList($("settings-notes"), data.notes);
+    setSettingsDirty(false);
+    await loadBackupSummary();
     await loadAutomationStatus();
+  }
+
+  async function loadBackupSummary() {
+    const node = $("settings-backup-summary");
+    if (!node) return;
+    node.textContent = "正在读取备份占用…";
+    try {
+      const data = await apiGet("backups", { limit: 1 });
+      if (!data.ok) {
+        node.textContent = "备份信息读取失败：" + (data.error || "未知错误");
+        return;
+      }
+      const count = data.total_count != null
+        ? data.total_count
+        : (data.items || []).length;
+      const size = data.total_human || fmtBytes(data.total_bytes);
+      node.textContent =
+        "当前备份 " + fmtNum(count) + " 份 / " + size + "；每份备份约等于整库大小。";
+    } catch (error) {
+      node.textContent =
+        "备份信息读取失败：" + (error && error.message ? error.message : String(error));
+    }
   }
 
   async function loadAutomationStatus() {
@@ -1624,7 +1712,7 @@
       const head = el("div", "card-head");
       const copy = el("div");
       copy.appendChild(el("h2", "", "自动清理状态"));
-      copy.appendChild(el("p", "muted", "只处理已退群会话；默认不含 provider_stats。"));
+      copy.appendChild(el("p", "muted", "只处理已退群会话；默认不删除调用统计。"));
       head.appendChild(copy);
       head.appendChild(el(
         "span",
@@ -1635,15 +1723,15 @@
 
       const grid = el("div", "automation-grid");
       grid.appendChild(automationItem(
-        "扫描间隔",
+        "清理间隔",
         status.interval_minutes > 0 ? "每 " + fmtNum(status.interval_minutes) + " 分钟" : "未设置"
       ));
       grid.appendChild(automationItem(
-        "下次运行",
+        "下次执行",
         status.next_run ? fmtTime(status.next_run) : "--"
       ));
       grid.appendChild(automationItem(
-        "上次运行",
+        "上次执行",
         status.last_run ? fmtTime(status.last_run) : "尚未运行"
       ));
       let lastText = "--";
@@ -1651,7 +1739,7 @@
       const last = status.last_result;
       if (last) {
         if (last.ok && last.skipped) {
-          lastText = "无候选，已跳过";
+          lastText = "没有可清理的会话，已跳过";
           lastKind = "ok";
         } else if (last.ok) {
           lastText = "删除 " + fmtNum((last.result || {}).deleted) + " 行";
@@ -1676,8 +1764,8 @@
       box.appendChild(el(
         "p",
         "automation-foot",
-        "范围：只处理已退群会话；不动已删好友/临时会话；" +
-          (status.include_provider_stats ? "包含 provider_stats。" : "不含 provider_stats。")
+        "只在开启后执行；只处理已退群会话，不会清理好友列表外或过期临时会话；" +
+          (status.include_provider_stats ? "会包含调用统计。" : "默认不删除调用统计。")
       ));
     } catch (error) {
       box.replaceChildren(el("p", "error-text", error && error.message ? error.message : String(error)));
@@ -1693,13 +1781,13 @@
 
   async function runAutoCleanOnce(button, statusNode) {
     if (!window.confirm(
-      "立即运行一次自动清理？\n" +
-      "只清理已退群会话，默认不含 provider_stats；执行前会备份整库。"
+      "立即按当前设置执行一次自动清理？\n" +
+      "只处理已退群会话；默认不删除调用统计；执行前会备份整库。"
     )) {
       return;
     }
     setBusy(button, true, "运行中…");
-    setNodeStatus(statusNode, "正在扫描并清理…");
+    setNodeStatus(statusNode, "正在扫描并清理，请稍候…");
     try {
       const data = await apiPost("auto_clean_run", { confirm: "确认运行" });
       if (!data.ok) {
@@ -1760,9 +1848,9 @@
     }
   }
 
-  async function saveSettings() {
+  function readSettingsPayload() {
     const form = $("settings-form");
-    if (!form) return;
+    if (!form) return null;
     const read = function (name) {
       const field = form.elements[name];
       return field ? String(field.value || "").trim() : "";
@@ -1776,33 +1864,102 @@
         return item.trim();
       }).filter(Boolean);
     };
-    const button = $("settings-save");
+    const number = function (name) {
+      const value = Number(read(name));
+      return Number.isFinite(value) ? value : NaN;
+    };
+    return {
+      platform_id: read("platform_id") || "default",
+      temp_session_days: number("temp_session_days"),
+      scan_timeout_seconds: number("scan_timeout_seconds"),
+      backup_retain: number("backup_retain"),
+      include_provider_stats: checked("include_provider_stats"),
+      whitelist: list("whitelist"),
+      auto_clean_enabled: checked("auto_clean_enabled"),
+      scan_interval_minutes: number("scan_interval_minutes"),
+      auto_clean_include_provider_stats: checked("auto_clean_include_provider_stats"),
+      notify_enabled: checked("notify_enabled"),
+      notify_targets: list("notify_targets"),
+    };
+  }
+
+  function validateSettings(payload) {
+    clearFieldErrors();
+    const invalidWhitelist = (payload.whitelist || []).filter(function (item) {
+      return !/^\d+$/.test(item) && !(item.includes(":") && !/\s/.test(item));
+    });
+    if (invalidWhitelist.length) {
+      const message =
+        "白名单格式不正确：" + invalidWhitelist[0] +
+        "；每行填群号/QQ（纯数字）或完整会话 ID（含冒号）";
+      setFieldError("whitelist", message);
+      return message;
+    }
+    if (!Number.isFinite(payload.scan_interval_minutes) ||
+        payload.scan_interval_minutes < 1) {
+      const message =
+        "自动清理间隔必须在 1–1440 分钟之间；关闭自动清理请使用上面的开关";
+      setFieldError("scan_interval_minutes", message);
+      return message;
+    }
+    const checks = [
+      ["temp_session_days", payload.temp_session_days, 1, 365, "临时会话阈值必须在 1–365 天之间"],
+      ["scan_timeout_seconds", payload.scan_timeout_seconds, 3, 60, "读取超时必须在 3–60 秒之间"],
+      ["backup_retain", payload.backup_retain, 1, 30, "保留备份份数必须在 1–30 份之间"],
+      ["scan_interval_minutes", payload.scan_interval_minutes, 1, 1440, "自动清理间隔必须在 1–1440 分钟之间"],
+    ];
+    for (const [name, value, low, high, message] of checks) {
+      if (!Number.isFinite(value) || value < low || value > high) {
+        setFieldError(name, message);
+        return message;
+      }
+    }
+    return "";
+  }
+
+  async function saveSettings(trigger, options) {
+    const opts = options || {};
+    if (!state.settingsDirty) {
+      setInlineText("settings-status", "没有需要保存的修改", "success");
+      return;
+    }
+    const payload = readSettingsPayload();
+    if (!payload) return;
+    const validationError = validateSettings(payload);
+    if (validationError) {
+      setInlineText("settings-status", validationError, "error");
+      return;
+    }
+    const top = $("settings-save");
+    const bottom = $("settings-save-bottom");
+    const leaveButton = $("settings-save-leave");
+    const button = trigger || top;
+    [top, bottom, leaveButton].forEach(function (node) {
+      if (node) node.disabled = true;
+    });
     setBusy(button, true, "保存中…");
     setInlineText("settings-status", "");
     try {
-      const data = await apiPost("settings_save", {
-        platform_id: read("platform_id") || "default",
-        temp_session_days: Number(read("temp_session_days")),
-        scan_timeout_seconds: Number(read("scan_timeout_seconds")),
-        backup_retain: Number(read("backup_retain")),
-        include_provider_stats: checked("include_provider_stats"),
-        whitelist: list("whitelist"),
-        auto_clean_enabled: checked("auto_clean_enabled"),
-        scan_interval_minutes: Number(read("scan_interval_minutes")),
-        auto_clean_include_provider_stats: checked("auto_clean_include_provider_stats"),
-        notify_enabled: checked("notify_enabled"),
-        notify_targets: list("notify_targets"),
-      });
+      const data = await apiPost("settings_save", payload);
       if (!data.ok) {
         setInlineText("settings-status", data.error || "保存失败", "error");
         return;
       }
-      await loadSettings();
+      setSettingsDirty(false);
       setInlineText("settings-status", data.message || "配置已保存", "success");
+      if (opts.leave) {
+        await switchTab("overview");
+        setInlineText("global-status", "配置已保存，已返回概览", "success");
+      }
     } catch (error) {
       setInlineText("settings-status", error && error.message ? error.message : String(error), "error");
     } finally {
-      setBusy(button, false, "保存设置");
+      [top, bottom, leaveButton].forEach(function (node) {
+        if (node) node.disabled = false;
+      });
+      if (button) {
+        setBusy(button, false, opts.leave ? "保存并离开" : "保存设置");
+      }
     }
   }
 
@@ -1914,6 +2071,10 @@
   }
 
   async function refreshCurrent() {
+    if (state.tab === "settings" && state.settingsDirty &&
+        !window.confirm("有未保存的修改，确定放弃并刷新？")) {
+      return;
+    }
     const button = $("refresh-btn");
     const names = {
       overview: "概览",
@@ -1968,6 +2129,7 @@
     document.querySelectorAll(".panel").forEach(function (panel) {
       panel.classList.toggle("active", panel.id === "panel-" + name);
     });
+    setInlineText("global-status", "");
     hideBanner();
     try {
       if (name === "overview" && !state.overview) await loadOverview();
@@ -2018,12 +2180,29 @@
     $("backups-refresh").addEventListener("click", function () {
       refreshBackups($("backups-refresh"));
     });
-    $("settings-save").addEventListener("click", saveSettings);
+    $("settings-save").addEventListener("click", function () {
+      saveSettings($("settings-save"));
+    });
+    $("settings-save-bottom").addEventListener("click", function () {
+      saveSettings($("settings-save-bottom"));
+    });
+    $("settings-save-leave").addEventListener("click", function () {
+      saveSettings($("settings-save-leave"), { leave: true });
+    });
     $("settings-form").addEventListener("submit", function (event) {
       event.preventDefault();
-      saveSettings();
+      saveSettings($("settings-save"));
     });
-    $("settings-reload").addEventListener("click", async function () {
+    $("settings-form").addEventListener("input", function () {
+      setSettingsDirty(true);
+    });
+    $("settings-form").addEventListener("change", function () {
+      setSettingsDirty(true);
+    });
+    $("settings-discard").addEventListener("click", async function () {
+      if (state.settingsDirty && !window.confirm("放弃未保存的修改，重新读取已保存的配置？")) {
+        return;
+      }
       const button = $("settings-reload");
       setBusy(button, true, "读取中…");
       setInlineText("settings-status", "正在重新读取配置…");
@@ -2031,7 +2210,7 @@
         await loadSettings();
         setInlineText(
           "settings-status",
-          "配置已重新读取 · " + new Date().toLocaleTimeString(),
+          "已重新读取配置 · " + new Date().toLocaleTimeString(),
           "success"
         );
       } catch (error) {
@@ -2041,7 +2220,31 @@
           "error"
         );
       } finally {
-        setBusy(button, false, "重新读取");
+        setBusy(button, false, "放弃修改并重新读取");
+      }
+    });
+    $("settings-reload").addEventListener("click", async function () {
+      if (state.settingsDirty && !window.confirm("有未保存的修改，确定放弃并重新读取？")) {
+        return;
+      }
+      const button = $("settings-reload");
+      setBusy(button, true, "读取中…");
+      setInlineText("settings-status", "正在重新读取配置…");
+      try {
+        await loadSettings();
+        setInlineText(
+          "settings-status",
+          "已重新读取配置 · " + new Date().toLocaleTimeString(),
+          "success"
+        );
+      } catch (error) {
+        setInlineText(
+          "settings-status",
+          error && error.message ? error.message : String(error),
+          "error"
+        );
+      } finally {
+        setBusy(button, false, "放弃修改并重新读取");
       }
     });
     $("detail-close").addEventListener("click", closeDetail);
