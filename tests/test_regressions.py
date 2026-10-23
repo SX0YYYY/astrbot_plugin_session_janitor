@@ -243,6 +243,29 @@ class RollbackSafetyTests(unittest.TestCase):
         manifest, _ = self.store.load(result.backup_id)
         self.assertEqual(manifest["status"], "completed")
         self.assertEqual(manifest.get("quick_check"), "ok")
+        self.assertIn("quick_check_ms", manifest)
+
+    def test_conflict_check_runs_inside_transaction(self):
+        result = self._clean_with_provider()
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "insert or replace into provider_stats "
+            "(id, umo, provider_model) values (2, 'default:GroupMessage:111', 'NEW')"
+        )
+        con.commit()
+        con.close()
+
+        calls: list[bool] = []
+        original = CoreCleaner._find_conflicts
+
+        def wrapped(instance, rows, connection=None):
+            calls.append(bool(connection is not None and connection.in_transaction))
+            return original(instance, rows, connection)
+
+        with patch.object(CoreCleaner, "_find_conflicts", new=wrapped):
+            self.cleaner.rollback(result.backup_id, "skip")
+        self.assertTrue(calls)
+        self.assertTrue(all(calls))
 
     def test_quick_check_failure_rolls_back(self):
         with patch("core.cleaner.QUICK_CHECK_THRESHOLD", 1), patch.object(

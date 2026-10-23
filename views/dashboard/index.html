@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <title>会话清道夫</title>
-  <link rel="stylesheet" href="./style.css?v=0.7.1" />
+  <link rel="stylesheet" href="./style.css?v=0.7.2" />
 </head>
 <body>
   <div class="page">
@@ -14,12 +14,12 @@
         <div class="logo" aria-hidden="true">清</div>
         <div class="brand-text">
           <h1>会话清道夫</h1>
-          <p id="subtitle">数据库体检 / 扫描 / 清理 / 回滚 · V0.7.1</p>
+          <p id="subtitle">数据库体检 / 扫描 / 清理 / 回滚 · V0.7.2</p>
         </div>
       </div>
       <div class="top-actions">
         <span class="inline-status" id="global-status"></span>
-        <span class="pill" id="version">v0.7.1</span>
+        <span class="pill" id="version">v0.7.2</span>
         <button id="scan-btn" class="primary" type="button"
           title="重新读取当前 QQ 群/好友列表并扫描核心库，更新所有标签页的数据。">开始扫描</button>
         <button id="refresh-btn" class="ghost" type="button"
@@ -212,6 +212,10 @@
             <strong>provider_stats（调用统计）</strong>：模型调用用量流水。删掉只丢历史用量，
             不影响聊天记录、偏好或机器人运行；默认不删。只剩这一项的会话会默认隐藏。
           </p>
+          <p class="panel-hint">
+            删除量 ≥500 行时会在提交前执行 <strong>quick_check</strong>；数据量大时校验可能
+            耗时数秒，期间 AstrBot 写入会短暂等待。小清理会跳过校验。
+          </p>
           <div class="toolbar">
             <label class="check" title="勾选后会一并删除模型调用用量统计。">
               <input type="checkbox" id="clean-include-provider-stats" />
@@ -248,6 +252,7 @@
               <button id="backups-refresh" class="ghost" type="button">刷新备份列表</button>
             </div>
             <div id="backups-list" class="backup-list"></div>
+            <p class="panel-hint" id="backups-size"></p>
             <div class="clean-confirm">
               <label>回滚确认词 <input id="rollback-confirm" type="text" placeholder="输入“确认回滚”" autocomplete="off" /></label>
             </div>
@@ -308,6 +313,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=0.7.1" defer></script>
+  <script src="./app.js?v=0.7.2" defer></script>
 </body>
 </html>

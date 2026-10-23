@@ -14,6 +14,7 @@ V0.7.1 加固：
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -142,7 +143,11 @@ class CoreCleaner:
             deleted_total = sum(counts.values())
             if deleted_total >= QUICK_CHECK_THRESHOLD:
                 _emit(progress, "校验数据库完整性", 94, "正在执行 quick_check")
+                started = time.perf_counter()
                 check = self._quick_check(connection)
+                bundle.manifest["quick_check_ms"] = max(
+                    0, int((time.perf_counter() - started) * 1000)
+                )
                 bundle.manifest["quick_check"] = check or "unknown"
                 if str(check).strip().lower() != "ok":
                     raise RuntimeError(
@@ -151,6 +156,7 @@ class CoreCleaner:
                     )
             else:
                 bundle.manifest["quick_check"] = "skipped"
+                bundle.manifest["quick_check_ms"] = 0
 
             bundle.save()
             connection.commit()
@@ -202,23 +208,12 @@ class CoreCleaner:
             raise ValueError("该备份当前状态不可回滚")
 
         self._validate_backup_rows(manifest, rows)
-        conflicts, conflict_keys, pk_columns = self._find_conflicts(rows)
-        if conflicts and on_conflict is None:
-            raise RollbackConflictError(conflicts)
-
-        filtered_rows = rows
-        skipped_conflicts: dict[str, int] = {}
-        overwritten: dict[str, int] = {}
-        if conflicts and on_conflict == "skip":
-            filtered_rows, skipped_conflicts = self._filter_conflict_rows(
-                rows, conflict_keys, pk_columns
-            )
-            if not self._count_core_rows(filtered_rows):
-                raise ValueError(
-                    "所有待回滚行都与当前数据冲突；已按“跳过冲突”处理，未修改数据库"
-                )
-        elif conflicts and on_conflict == "overwrite":
-            overwritten = dict(conflicts)
+        # 先做一次无锁预检，避免“有冲突”时白做安全快照；真正的判定在
+        # BEGIN IMMEDIATE 内重做，防止预检与写入之间的 TOCTOU。
+        if on_conflict is None:
+            preflight, _, _ = self._find_conflicts(rows)
+            if preflight:
+                raise RollbackConflictError(preflight)
 
         safety_backup_id: str | None = None
         safety = self.backup_store.create("safety", [])
@@ -237,8 +232,29 @@ class CoreCleaner:
             connection = self._connect(write=True)
         except Exception as exc:
             raise RuntimeError(f"打开数据库失败，已中止回滚：{exc}") from exc
+        conflicts: dict[str, int] = {}
+        skipped_conflicts: dict[str, int] = {}
+        overwritten: dict[str, int] = {}
+        filtered_rows = rows
         try:
             connection.execute("BEGIN IMMEDIATE")
+            # 在写事务内重新检测；此后到 restore_rows 之间持有写锁，
+            # 不会再有新行插入造成“skip 实际覆盖”的 TOCTOU。
+            conflicts, conflict_keys, pk_columns = self._find_conflicts(
+                rows, connection=connection
+            )
+            if conflicts and on_conflict is None:
+                raise RollbackConflictError(conflicts)
+            if conflicts and on_conflict == "skip":
+                filtered_rows, skipped_conflicts = self._filter_conflict_rows(
+                    rows, conflict_keys, pk_columns
+                )
+                if not self._count_core_rows(filtered_rows):
+                    raise ValueError(
+                        "所有待回滚行都与当前数据冲突；已按“跳过冲突”处理，未修改数据库"
+                    )
+            elif conflicts and on_conflict == "overwrite":
+                overwritten = dict(conflicts)
             restored = BackupBundle.restore_rows(connection, filtered_rows)
             connection.commit()
         except Exception:
@@ -301,11 +317,14 @@ class CoreCleaner:
     def _find_conflicts(
         self,
         rows: dict[str, Any],
+        connection: sqlite3.Connection | None = None,
     ) -> tuple[dict[str, int], dict[str, set[tuple[Any, ...]]], dict[str, list[str]]]:
         conflicts: dict[str, int] = {}
         conflict_keys: dict[str, set[tuple[Any, ...]]] = {}
         pk_columns: dict[str, list[str]] = {}
-        connection = self._connect(write=False)
+        own_connection = connection is None
+        if connection is None:
+            connection = self._connect(write=False)
         try:
             for table, entry in rows.items():
                 if not isinstance(entry, dict):
@@ -330,7 +349,8 @@ class CoreCleaner:
                     conflicts[table_name] = len(existing)
                     conflict_keys[table_name] = existing
         finally:
-            connection.close()
+            if own_connection:
+                connection.close()
         return conflicts, conflict_keys, pk_columns
 
     @staticmethod

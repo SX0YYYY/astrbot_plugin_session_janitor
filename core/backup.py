@@ -221,6 +221,25 @@ class BackupStore:
                 break
         return items
 
+    def total_size(self) -> int:
+        """统计所有备份目录的磁盘占用，供面板显示。"""
+
+        total = 0
+        try:
+            paths = list(self.root.iterdir())
+        except OSError:
+            return 0
+        for path in paths:
+            if not path.is_dir() or not BACKUP_ID_RE.fullmatch(path.name):
+                continue
+            for item in path.rglob("*"):
+                try:
+                    if item.is_file():
+                        total += int(item.stat().st_size)
+                except OSError:
+                    continue
+        return total
+
     def load(self, backup_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         text = safe_backup_id(backup_id)
         root = self._path(text)

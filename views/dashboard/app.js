@@ -354,6 +354,22 @@
     }
   }
 
+  function maybeShowVacuumTip(health) {
+    if (!health || health.ok === false) return;
+    const file = health.file || {};
+    const sqlite = health.sqlite || {};
+    const size = Number(file.size_bytes || 0);
+    const freelist = Number(sqlite.freelist_bytes || 0);
+    if (size <= 0 || freelist <= 0) return;
+    const ratio = freelist / size;
+    if (ratio < 0.25) return;
+    showBanner(
+      "数据库空闲页约占 " + Math.round(ratio * 100) +
+        "%，建议在空闲时段手动执行 VACUUM，才能真正回收磁盘空间。",
+      "info"
+    );
+  }
+
   function renderPlatform(data) {
     const box = $("platform-info");
     box.replaceChildren();
@@ -1034,6 +1050,13 @@
     const box = $("backups-list");
     box.replaceChildren();
     const items = data.items || [];
+    const sizeNode = $("backups-size");
+    if (sizeNode) {
+      sizeNode.textContent = items.length
+        ? "备份目录共 " + (data.total_human || fmtBytes(data.total_bytes)) +
+          "（" + fmtNum(items.length) + " 份）"
+        : "备份目录为空";
+    }
     if (!items.length) {
       box.appendChild(el("p", "empty", "还没有备份。"));
       return;
@@ -1162,6 +1185,7 @@
           showProgress(100, "清理完成", "列表已刷新", startedAt);
           await loadOverview();
           await loadCleanTab();
+          maybeShowVacuumTip(state.overview && state.overview.health);
           break;
         }
         if (job.status === "error") {
@@ -1695,6 +1719,7 @@
       }
       await loadOverview();
       await loadCleanTab();
+      maybeShowVacuumTip(state.overview && state.overview.health);
     } catch (error) {
       setNodeStatus(
         statusNode,

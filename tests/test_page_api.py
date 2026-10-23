@@ -372,6 +372,8 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
 
         backups = await self.api.backups()
         self.assertTrue(backups["items"])
+        self.assertGreater(backups["total_bytes"], 0)
+        self.assertTrue(backups["total_human"])
         backup_id = cleaned["result"]["backup_id"]
 
         fake_request._json = {"backup_id": backup_id, "confirm": "确认回滚"}

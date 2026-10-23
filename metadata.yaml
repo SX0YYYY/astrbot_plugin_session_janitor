@@ -2,7 +2,7 @@ name: astrbot_plugin_session_janitor
 display_name: 会话清道夫
 desc: 扫描、预览并清理已退群、已删好友、过期临时会话在 AstrBot 核心库中的残留数据；支持数据库体检、会话详情、核心库消息历史、整库快照、逐行备份、回滚和定时自动清理。
 short_desc: 核心库体检、退群/删好友残留扫描清理、回滚与自动清理
-version: 0.7.1
+version: 0.7.2
 author: 烬辞
 repo: "https://github.com/SX0YYYY/astrbot_plugin_session_janitor"
 support_platforms:

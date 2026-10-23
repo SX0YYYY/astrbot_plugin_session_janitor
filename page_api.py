@@ -30,7 +30,7 @@ from .core.cleaner import CoreCleaner, RollbackConflictError
 from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list, strict_bool
 from .core.db import JanitorDB
 from .core.detail import build_conversation_detail, build_session_detail
-from .core.health import build_health
+from .core.health import build_health, human_bytes
 from .core.models import TABLE_KEYS
 from .core.platform import PlatformListError, fetch_platform_snapshot, list_platforms
 from .core.preview import TABLE_LABELS, build_preview
@@ -554,7 +554,19 @@ class PageApi:
             limit = max(1, min(100, int(_query("limit", "20"))))
         except ValueError:
             limit = 20
-        return jsonify({"ok": True, "items": self.plugin.backup_store.list(limit)})
+        items = self.plugin.backup_store.list(limit)
+        try:
+            total = await asyncio.to_thread(self.plugin.backup_store.total_size)
+        except Exception:
+            total = 0
+        return jsonify(
+            {
+                "ok": True,
+                "items": items,
+                "total_bytes": total,
+                "total_human": human_bytes(total),
+            }
+        )
 
     async def rollback(self) -> Any:
         async with self._scan_lock:
