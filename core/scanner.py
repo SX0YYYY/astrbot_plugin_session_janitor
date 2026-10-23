@@ -262,7 +262,7 @@ class Scanner:
         if builder.counts.get("provider_stats"):
             if cleanable_rows == 0 and not self.include_provider_stats:
                 notes.add(
-                    "只剩 provider_stats 调用统计；默认不清理，"
+                    "只剩调用统计；默认不清理，"
                     "需要时在预览/执行清理页勾选“包含 provider_stats”"
                 )
             else:

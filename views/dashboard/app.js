@@ -339,11 +339,11 @@
     const checkbox = $("include-provider-stats");
     if (checkbox) checkbox.checked = true;
     setBusy(button, true, "生成中…");
-    setInlineText("health-status", "正在按包含 provider_stats 重新计算预览…");
+    setInlineText("health-status", "正在按包含调用统计重新计算预览…");
     try {
       await switchTab("preview");
       await refreshPreview($("preview-btn"));
-      setInlineText("health-status", "预览已包含 provider_stats", "success");
+      setInlineText("health-status", "预览已包含调用统计", "success");
     } catch (error) {
       setInlineText(
         "health-status",
@@ -976,7 +976,7 @@
       const providerRows = Number((item.counts || {}).provider_stats || 0);
       main.appendChild(el("div", "candidate-meta",
         (TYPE_LABELS[item.kind] || item.kind) + " · 候选行数 " + fmtNum(item.total_rows) +
-        (only ? " · 其中 provider_stats " + fmtNum(providerRows) + " 条，默认不清理" : "") +
+        (only ? " · 其中调用统计 " + fmtNum(providerRows) + " 条，默认不清理" : "") +
         " · " + (item.notes || []).join("；")));
       row.appendChild(checkbox);
       row.appendChild(main);
@@ -1026,7 +1026,7 @@
     }
     note.classList.remove("hidden");
     note.textContent =
-      "另有 " + hidden + " 个会话只剩余 provider_stats 调用统计，默认不清理，已隐藏；" +
+      "另有 " + hidden + " 个会话只剩余调用统计，默认不清理，已隐藏；" +
       "需要查看时勾选“显示仅剩调用统计的条目”。";
   }
 
