@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.config import cfg_bool, cfg_get, cfg_int, cfg_list
 from core.db import JanitorDB, preference_targets
+from core.health import build_health, human_bytes
 from core.models import PlatformSnapshot
 from core.preview import build_preview
 from core.scanner import Scanner
@@ -282,6 +283,63 @@ class ScannerTests(unittest.TestCase):
                 "default:GroupMessage:222",
             },
         )
+
+
+class HealthTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Path(self.temp.name) / "data_v4.db"
+        build_db(self.db)
+        self.scan = Scanner(
+            self.db,
+            platform_id="default",
+            temp_session_days=30,
+            include_provider_stats=False,
+            now=NOW_TS,
+        ).scan(snapshot())
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_health_report_counts_and_estimate(self):
+        health = build_health(self.db, self.scan.to_dict())
+        self.assertTrue(health["ok"])
+        self.assertTrue(health["readonly"])
+        self.assertTrue(health["file"]["exists"])
+        self.assertGreater(health["file"]["size_bytes"], 0)
+        self.assertGreater(health["sqlite"]["page_size"], 0)
+        self.assertGreater(health["sqlite"]["page_count"], 0)
+        self.assertEqual(health["database"]["core_rows_total"], 25)
+        self.assertEqual(health["scan"]["candidates"], 3)
+        self.assertEqual(health["scan"]["default_targets"], 1)
+        self.assertEqual(health["scan"]["default_rows"], 7)
+        self.assertEqual(health["scan"]["optional_provider_rows"], 4)
+        self.assertEqual(health["estimate"]["delete_rows"], 11)
+        self.assertGreater(health["estimate"]["estimated_reclaim_bytes"], 0)
+        self.assertLessEqual(
+            health["estimate"]["estimated_reclaim_bytes"],
+            health["file"]["size_bytes"],
+        )
+        self.assertTrue(any("VACUUM" in item for item in health["warnings"]))
+        self.assertTrue(health["vacuum"]["recommended"])
+
+    def test_health_without_scan(self):
+        health = build_health(self.db)
+        self.assertFalse(health["scan"]["available"])
+        self.assertEqual(health["scan"]["default_rows"], 0)
+        self.assertEqual(health["estimate"]["delete_rows"], 0)
+        self.assertTrue(any("尚未扫描" in item for item in health["warnings"]))
+
+    def test_health_missing_database(self):
+        health = build_health(Path(self.temp.name) / "missing.db")
+        self.assertFalse(health["file"]["exists"])
+        self.assertEqual(health["file"]["size_bytes"], 0)
+        self.assertTrue(any("未找到" in item for item in health["warnings"]))
+
+    def test_human_bytes(self):
+        self.assertEqual(human_bytes(0), "0 B")
+        self.assertEqual(human_bytes(1024), "1.0 KB")
+        self.assertEqual(human_bytes(1024 * 1024), "1.0 MB")
 
 
 class StoreTests(unittest.TestCase):

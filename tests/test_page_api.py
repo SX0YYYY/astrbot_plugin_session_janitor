@@ -127,6 +127,49 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(settings["readonly"])
         self.assertEqual(settings["config"]["temp_session_days"], 30)
 
+    async def test_health_report_views(self):
+        async def fake_fetch(context, platform_id="default", timeout=10.0):
+            return snapshot()
+
+        page_api_module.fetch_platform_snapshot = fake_fetch
+        before = await self.api.overview()
+        self.assertTrue(before["needs_scan"])
+        self.assertIn("health", before)
+        self.assertFalse(before["health"]["scan"]["available"])
+
+        await self.api._run_scan()
+        overview = await self.api.overview()
+        self.assertTrue(overview["health"]["file"]["exists"])
+        self.assertEqual(overview["health"]["scan"]["default_rows"], 7)
+        self.assertEqual(overview["health"]["scan"]["optional_provider_rows"], 4)
+
+        report = await self.api.health_report()
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["health"]["estimate"]["delete_rows"], 11)
+        self.assertTrue(report["health"]["readonly"])
+
+    async def test_platforms_route(self):
+        class _Adapter:
+            def meta(self):
+                return {"id": "default", "name": "aiocqhttp"}
+
+        class _PlatformContext:
+            def get_platform_inst(self, platform_id):
+                return _Adapter() if platform_id == "" else None
+
+        self.plugin.context = _PlatformContext()
+        data = await self.api.platforms()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["current"], "default")
+        self.assertEqual(data["recommended"], "default")
+        self.assertTrue(any(item["id"] == "default" for item in data["items"]))
+
+    async def test_platforms_falls_back_to_current(self):
+        data = await self.api.platforms()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["items"][0]["id"], "default")
+        self.assertEqual(data["items"][0]["source"], "config")
+
     async def test_session_detail(self):
         async def fake_fetch(context, platform_id="default", timeout=10.0):
             return snapshot()

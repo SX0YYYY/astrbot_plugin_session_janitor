@@ -81,6 +81,33 @@ def find_adapter(context: Any, platform_id: str) -> Any | None:
     return adapters[0] if adapters else None
 
 
+def list_platforms(context: Any) -> list[dict[str, Any]]:
+    """列出当前 AstrBot 已加载的平台实例，供设置页下拉选择。
+
+    只读取适配器自身的 meta 信息，不调用任何平台接口，也不修改平台状态。
+    """
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for adapter in _iter_adapters(context):
+        platform_id = _meta_value(adapter, "id").strip()
+        name = _meta_value(adapter, "name").strip()
+        if not platform_id and not name:
+            name = type(adapter).__name__
+        key = platform_id or name
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "id": platform_id or name,
+                "name": name or platform_id,
+                "source": "adapter",
+            }
+        )
+    return items
+
+
 def _get_client(adapter: Any) -> Any:
     get_client = getattr(adapter, "get_client", None)
     if callable(get_client):

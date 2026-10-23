@@ -142,6 +142,19 @@
     return Number.isFinite(number) ? number.toLocaleString() : "0";
   }
 
+  function fmtBytes(value) {
+    const number = Number(value || 0);
+    if (!Number.isFinite(number) || number <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let size = number;
+    let index = 0;
+    while (size >= 1024 && index < units.length - 1) {
+      size /= 1024;
+      index += 1;
+    }
+    return (index === 0 ? Math.round(size) : size.toFixed(1)) + " " + units[index];
+  }
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -209,12 +222,13 @@
     }
     const version = (data.config || {}).version;
     if (version) $("version").textContent = "v" + version;
+    const scan = data.scan;
+    renderHealth(data.health);
     renderMetrics(data);
     renderPlatform(data);
     renderTables(data);
     renderScanChanges(scan);
     warningList($("overview-warnings"), data.warnings);
-    const scan = data.scan;
     if (data.needs_scan || !scan) {
       $("subtitle").textContent = "尚未扫描 · 只读";
     } else {
@@ -234,6 +248,106 @@
     grid.appendChild(metric("过期临时会话", summary.expired_temp != null ? fmtNum(summary.expired_temp) : "--", "默认不勾选"));
     grid.appendChild(metric("好友列表外", summary.missing_friend != null ? fmtNum(summary.missing_friend) : "--", "默认不勾选"));
     grid.appendChild(metric("候选会话", summary.candidates != null ? fmtNum(summary.candidates) : "--", "可勾选清理"));
+  }
+
+  function renderHealth(health) {
+    const grid = $("health-metrics");
+    if (!grid) return;
+    grid.replaceChildren();
+    const warnings = $("health-warnings");
+    if (!health || health.ok === false) {
+      $("health-size").textContent = "--";
+      $("health-headline").textContent =
+        (health && health.error) || "暂时无法读取数据库体检";
+      grid.appendChild(metric("主库大小", "--", "读取失败"));
+      if (warnings) warningList(warnings, []);
+      return;
+    }
+    const file = health.file || {};
+    const database = health.database || {};
+    const scan = health.scan || {};
+    const estimate = health.estimate || {};
+    $("health-size").textContent = file.size_human || fmtBytes(file.size_bytes);
+    $("health-headline").textContent = file.exists
+      ? "只读统计，不会删除任何数据 · 更新于 " + fmtTime(health.generated_at)
+      : "未找到 data_v4.db";
+    grid.appendChild(metric(
+      "主库大小",
+      file.size_human || fmtBytes(file.size_bytes),
+      "data_v4.db"
+    ));
+    grid.appendChild(metric(
+      "核心库总行数",
+      fmtNum(database.core_rows_total),
+      "相关表合计"
+    ));
+    grid.appendChild(metric(
+      "默认可清理行数",
+      scan.available ? fmtNum(scan.default_rows) : "--",
+      scan.available ? "已退群、不含调用统计" : "先扫描"
+    ));
+    grid.appendChild(metric(
+      "可选调用统计",
+      scan.available ? fmtNum(scan.optional_provider_rows) : "--",
+      "provider_stats"
+    ));
+    grid.appendChild(metric(
+      "预计可回收",
+      scan.available
+        ? (estimate.estimated_reclaim_human || fmtBytes(estimate.estimated_reclaim_bytes))
+        : "--",
+      scan.available ? "VACUUM 后生效" : "先扫描"
+    ));
+    grid.appendChild(metric(
+      "候选会话",
+      scan.available ? fmtNum(scan.candidates) : "--",
+      "可勾选清理"
+    ));
+    const note = $("health-note");
+    if (note) {
+      note.textContent =
+        "预计可回收按候选行数占核心相关表总行数的比例粗略估算；" +
+        "SQLite 删除行后文件不会自动缩小，需要 VACUUM 才会真正释放磁盘空间（插件不会自动执行）。";
+    }
+    if (warnings) warningList(warnings, health.warnings || []);
+  }
+
+  function downloadHealthReport() {
+    const health = state.overview && state.overview.health;
+    if (!health) {
+      setInlineText("health-status", "还没有体检数据，请先刷新概览", "error");
+      return;
+    }
+    const now = new Date();
+    const stamp =
+      now.getFullYear().toString() +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      String(now.getDate()).padStart(2, "0") + "_" +
+      String(now.getHours()).padStart(2, "0") +
+      String(now.getMinutes()).padStart(2, "0");
+    downloadJSON(health, "会话清道夫数据库体检_" + stamp + ".json");
+    setInlineText("health-status", "体检报告已下载", "success");
+  }
+
+  async function previewWithProviderStats() {
+    const button = $("health-preview-btn");
+    const checkbox = $("include-provider-stats");
+    if (checkbox) checkbox.checked = true;
+    setBusy(button, true, "生成中…");
+    setInlineText("health-status", "正在按包含 provider_stats 重新计算预览…");
+    try {
+      await switchTab("preview");
+      await refreshPreview($("preview-btn"));
+      setInlineText("health-status", "预览已包含 provider_stats", "success");
+    } catch (error) {
+      setInlineText(
+        "health-status",
+        error && error.message ? error.message : String(error),
+        "error"
+      );
+    } finally {
+      setBusy(button, false, "包含调用统计重新预览");
+    }
   }
 
   function renderPlatform(data) {
@@ -1243,6 +1357,74 @@
     return input;
   }
 
+  async function buildPlatformPicker(current) {
+    const wrapper = el("div", "platform-picker");
+    const select = document.createElement("select");
+    select.name = "platform_id";
+    const refresh = el("button", "ghost small", "重新检测");
+    refresh.type = "button";
+    const status = el("span", "inline-status", "");
+    let detected = [];
+
+    function renderOptions(items, preserve) {
+      detected = Array.isArray(items) ? items : [];
+      const previous = preserve || select.value || current || "default";
+      select.replaceChildren();
+      const seen = new Set();
+      function add(id, label) {
+        const value = String(id || "").trim();
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label || value;
+        select.appendChild(option);
+      }
+      if (current) add(current, current + "（当前配置）");
+      detected.forEach(function (item) {
+        const id = String((item && item.id) || "").trim();
+        const name = String((item && item.name) || id);
+        add(id, name === id ? id : name + "（" + id + "）");
+      });
+      if (!select.childNodes.length) {
+        add(current || "default", (current || "default") + "（手动）");
+      }
+      select.value = seen.has(previous) ? previous : select.childNodes[0].value;
+    }
+
+    async function detect() {
+      refresh.disabled = true;
+      setNodeStatus(status, "正在检测平台实例…");
+      try {
+        const data = await apiGet("platforms");
+        const items = (data && data.items) || [];
+        renderOptions(items, select.value || current);
+        if (!items.length) {
+          setNodeStatus(status, "未检测到平台实例，可继续使用当前值", "error");
+        } else {
+          setNodeStatus(status, "已检测 " + items.length + " 个平台实例", "success");
+        }
+      } catch (error) {
+        renderOptions([], select.value || current);
+        setNodeStatus(
+          status,
+          "检测失败：" + (error && error.message ? error.message : String(error)),
+          "error"
+        );
+      } finally {
+        refresh.disabled = false;
+      }
+    }
+
+    refresh.addEventListener("click", detect);
+    wrapper.appendChild(select);
+    wrapper.appendChild(refresh);
+    wrapper.appendChild(status);
+    renderOptions([], current);
+    await detect();
+    return wrapper;
+  }
+
   async function loadSettings() {
     const data = await apiGet("settings");
     if (!data.ok) {
@@ -1262,10 +1444,11 @@
       "扫描设置",
       "控制平台列表读取、临时会话判定和备份策略。"
     );
+    const platformPicker = await buildPlatformPicker(config.platform_id || "default");
     scanGrid.appendChild(settingsField(
       "平台实例 ID",
-      textInput("platform_id", config.platform_id || "default", "default"),
-      "aiocqhttp 默认 default；修改后下次扫描生效。"
+      platformPicker,
+      "自动检测 AstrBot 已加载的平台实例；修改后下次扫描生效。"
     ));
     scanGrid.appendChild(settingsField(
       "临时会话阈值（天）",
@@ -1734,6 +1917,8 @@
     });
     $("scan-btn").addEventListener("click", triggerScan);
     $("refresh-btn").addEventListener("click", refreshCurrent);
+    $("health-report-btn").addEventListener("click", downloadHealthReport);
+    $("health-preview-btn").addEventListener("click", previewWithProviderStats);
     $("filter-btn").addEventListener("click", function () {
       applySessionFilter($("filter-btn"));
     });

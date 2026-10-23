@@ -8,7 +8,7 @@
         "description": "平台实例 ID",
         "type": "string",
         "default": "default",
-        "hint": "AstrBot 平台配置里的 ID；aiocqhttp 默认是 default。"
+        "hint": "AstrBot 平台配置里的 ID；面板会自动检测已加载的平台实例，aiocqhttp 默认是 default。"
       },
       "temp_session_days": {
         "description": "临时会话阈值（天）",

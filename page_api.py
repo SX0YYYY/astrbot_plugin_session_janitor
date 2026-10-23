@@ -30,8 +30,9 @@ from .core.cleaner import CoreCleaner
 from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list, strict_bool
 from .core.db import JanitorDB
 from .core.detail import build_conversation_detail, build_session_detail
+from .core.health import build_health
 from .core.models import TABLE_KEYS
-from .core.platform import PlatformListError, fetch_platform_snapshot
+from .core.platform import PlatformListError, fetch_platform_snapshot, list_platforms
 from .core.preview import TABLE_LABELS, build_preview
 from .core.scanner import Scanner
 
@@ -95,6 +96,8 @@ class PageApi:
 
         routes = (
             ("overview", self.overview, ["GET"], "扫描概览"),
+            ("health_report", self.health_report, ["GET"], "数据库体检"),
+            ("platforms", self.platforms, ["GET"], "可用平台实例"),
             ("sessions", self.sessions, ["GET"], "会话列表"),
             ("session_detail", self.session_detail, ["GET"], "会话详情"),
             ("conversation_detail", self.conversation_detail, ["GET"], "核心库对话记录"),
@@ -123,6 +126,13 @@ class PageApi:
     async def overview(self) -> Any:
         scan = self.store.load()
         inspect = await asyncio.to_thread(JanitorDB(self.plugin.db_path).inspect)
+        try:
+            health = await asyncio.to_thread(
+                build_health, self.plugin.db_path, scan, inspect
+            )
+        except Exception as exc:
+            logger.exception("生成数据库体检失败")
+            health = {"ok": False, "error": f"生成数据库体检失败：{exc}"}
         database = {
             "exists": bool(inspect.get("exists")),
             "tables": inspect.get("tables") or [],
@@ -135,6 +145,7 @@ class PageApi:
                     "needs_scan": True,
                     "scan": None,
                     "database": database,
+                    "health": health,
                     "config": self._config_view(),
                     "warnings": ["尚未扫描；点击“开始扫描”读取当前群/好友列表"],
                 }
@@ -159,8 +170,57 @@ class PageApi:
                 "needs_scan": False,
                 "scan": scan_view,
                 "database": database,
+                "health": health,
                 "config": self._config_view(),
                 "warnings": scan.get("warnings") or [],
+            }
+        )
+
+    async def health_report(self) -> Any:
+        scan = self.store.load()
+        try:
+            report = await asyncio.to_thread(
+                build_health, self.plugin.db_path, scan
+            )
+        except Exception as exc:
+            logger.exception("生成数据库体检失败")
+            return jsonify({"ok": False, "error": f"生成数据库体检失败：{exc}"})
+        return jsonify({"ok": True, "health": report})
+
+    async def platforms(self) -> Any:
+        """返回当前 AstrBot 已加载的平台实例，供设置页下拉选择。"""
+
+        try:
+            items = list_platforms(self.plugin.context)
+        except Exception as exc:
+            logger.warning("读取平台实例列表失败：%s", exc)
+            items = []
+        current = str(
+            cfg_get(self.plugin.config, "scan.platform_id", "default") or "default"
+        )
+        if current and all(str(item.get("id")) != current for item in items):
+            items.insert(
+                0,
+                {
+                    "id": current,
+                    "name": f"{current}（当前配置）",
+                    "source": "config",
+                },
+            )
+        recommended = next(
+            (
+                str(item.get("id"))
+                for item in items
+                if str(item.get("name")) == "aiocqhttp"
+            ),
+            current or "default",
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "items": items,
+                "current": current,
+                "recommended": recommended,
             }
         )
 

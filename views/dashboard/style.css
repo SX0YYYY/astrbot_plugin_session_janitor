@@ -203,6 +203,10 @@ button.ghost { background: transparent; }
 .metric-value { font-size: 26px; line-height: 1.2; }
 .metric-hint { color: var(--muted); font-size: 11px; }
 
+.health-card .card-head { align-items: flex-start; }
+.health-card .card-head p { margin: 3px 0 0; }
+.health-card .metric-value { font-size: 22px; }
+
 .two-col {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(420px, 1.4fr);
@@ -586,6 +590,7 @@ button.danger {
 }
 .settings-field input[type="text"],
 .settings-field input[type="number"],
+.settings-field select,
 .settings-field textarea {
   width: 100%;
   box-sizing: border-box;
@@ -600,11 +605,20 @@ button.danger {
 }
 .settings-field input[type="text"]:focus,
 .settings-field input[type="number"]:focus,
+.settings-field select:focus,
 .settings-field textarea:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-soft);
 }
+.platform-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.platform-picker select { flex: 1 1 180px; }
+.platform-picker .inline-status { flex-basis: 100%; }
 .settings-field textarea {
   min-height: 92px;
   resize: vertical;
