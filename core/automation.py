@@ -59,9 +59,17 @@ class AutoCleaner:
             self._last_run = last_run
         if isinstance(data.get("last_result"), dict):
             self._last_result = data["last_result"]
-        next_run = _float(data.get("next_run"))
-        if next_run is not None and next_run > time.time():
-            self._next_run = next_run
+
+        config = getattr(self.plugin, "config", None) or {}
+        enabled = cfg_bool(config, "automation.auto_clean_enabled", False)
+        interval = cfg_int(config, "automation.scan_interval_minutes", 0)
+        if enabled and interval > 0:
+            # 恢复配置键，避免 _loop 第一次 tick 把持久化的 next_run
+            # 重置成“现在 + 一个完整间隔”。
+            self._state_key = (True, int(interval))
+            next_run = _float(data.get("next_run"))
+            if next_run is not None:
+                self._next_run = next_run
 
     def _save_state(self) -> None:
         if self._state_file is None:

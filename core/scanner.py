@@ -156,7 +156,7 @@ class Scanner:
         summary["candidates"] = sum(1 for target in targets if target.selectable)
 
         tables = self._build_tables(raw, targets)
-        warnings = list(raw.warnings)
+        warnings = list(raw.warnings) + list(snapshot.warnings)
         if not self.include_provider_stats:
             warnings.append("provider_stats 默认不计入清理预览（面板可单独勾选）")
         if raw.table_counts.get("platform_sessions", 0):

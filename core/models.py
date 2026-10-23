@@ -24,6 +24,9 @@ TABLE_KEYS = (
     "platform_message_history",
 )
 
+# 插件只允许清理/回滚这五张 AstrBot 核心表；任何备份 JSON 里的其他表都必须拒绝。
+CORE_TABLES = TABLE_KEYS
+
 
 @dataclass
 class PlatformSnapshot:
@@ -32,6 +35,7 @@ class PlatformSnapshot:
     friends: dict[str, str]
     captured_at: str
     source: str = "aiocqhttp"
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +44,7 @@ class PlatformSnapshot:
             "friends": len(self.friends),
             "captured_at": self.captured_at,
             "source": self.source,
+            "warnings": list(self.warnings),
         }
 
 

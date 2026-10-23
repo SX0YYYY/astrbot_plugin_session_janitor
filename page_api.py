@@ -26,7 +26,7 @@ except Exception:  # 通知是可选项，缺少消息组件时只写日志
     MessageChain = None
 
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
-from .core.cleaner import CoreCleaner
+from .core.cleaner import CoreCleaner, RollbackConflictError
 from .core.config import cfg_bool, cfg_get, cfg_int, cfg_list, strict_bool
 from .core.db import JanitorDB
 from .core.detail import build_conversation_detail, build_session_detail
@@ -162,6 +162,7 @@ class PageApi:
                 "tables",
                 "warnings",
                 "changes",
+                "suspect_incomplete",
             )
         }
         return jsonify(
@@ -198,20 +199,24 @@ class PageApi:
         current = str(
             cfg_get(self.plugin.config, "scan.platform_id", "default") or "default"
         )
+        for item in items:
+            item["supported"] = item.get("supported") is not False
         if current and all(str(item.get("id")) != current for item in items):
             items.insert(
                 0,
                 {
                     "id": current,
-                    "name": f"{current}（当前配置）",
+                    "name": f"{current}（当前配置，未检测到）",
                     "source": "config",
+                    "supported": False,
                 },
             )
         recommended = next(
             (
                 str(item.get("id"))
                 for item in items
-                if str(item.get("name")) == "aiocqhttp"
+                if item.get("supported")
+                and str(item.get("name")).lower() == "aiocqhttp"
             ),
             current or "default",
         )
@@ -221,6 +226,7 @@ class PageApi:
                 "items": items,
                 "current": current,
                 "recommended": recommended,
+                "supported_count": sum(1 for item in items if item.get("supported")),
             }
         )
 
@@ -350,6 +356,30 @@ class PageApi:
             payload = self._normalize_settings(body)
         except ValueError as exc:
             return jsonify({"ok": False, "error": str(exc)})
+        platform_id = payload["scan"]["platform_id"]
+        current_platform = str(
+            cfg_get(self.plugin.config, "scan.platform_id", "default") or "default"
+        )
+        if platform_id != current_platform:
+            try:
+                detected = list_platforms(self.plugin.context)
+            except Exception:
+                detected = []
+            supported = {
+                str(item.get("id"))
+                for item in detected
+                if str(item.get("name")).lower() == "aiocqhttp"
+            }
+            if detected and platform_id not in supported:
+                return jsonify(
+                    {
+                        "ok": False,
+                        "error": (
+                            f"平台 ID {platform_id} 不是 aiocqhttp（OneBot/NapCat），"
+                            "无法读取群列表；请选择带“支持”标记的平台"
+                        ),
+                    }
+                )
         config = self.plugin.config
         try:
             save = getattr(config, "save_config_async", None)
@@ -420,9 +450,9 @@ class PageApi:
             return jsonify({"ok": False, "error": "请输入“确认发送”四个字"})
         result = await self._notify_auto_clean(
             {
-                "deleted": 1,
+                "deleted": 0,
                 "targets": ["测试通知"],
-                "counts": {"preferences": 1},
+                "counts": {},
                 "backup_id": "测试通知",
             },
             test=True,
@@ -537,9 +567,29 @@ class PageApi:
             backup_id = str(body.get("backup_id") or "").strip()
             if not backup_id:
                 return jsonify({"ok": False, "error": "缺少 backup_id"})
+            on_conflict = str(body.get("on_conflict") or "").strip() or None
+            if on_conflict not in {None, "skip", "overwrite"}:
+                return jsonify(
+                    {"ok": False, "error": "on_conflict 只能是 skip 或 overwrite"}
+                )
             cleaner = CoreCleaner(self.plugin.db_path, self.plugin.backup_store)
             try:
-                result = await asyncio.to_thread(cleaner.rollback, backup_id)
+                result = await asyncio.to_thread(
+                    cleaner.rollback, backup_id, on_conflict
+                )
+            except RollbackConflictError as exc:
+                message = (
+                    "回滚会覆盖同主键的新数据；请选择“跳过冲突”或“强制覆盖”"
+                )
+                logger.warning("%s：%s", message, exc.conflicts)
+                return jsonify(
+                    {
+                        "ok": False,
+                        "requires_confirmation": True,
+                        "conflicts": exc.conflicts,
+                        "error": message,
+                    }
+                )
             except ValueError as exc:
                 message = f"回滚失败：{exc}"
                 logger.warning(message)
@@ -582,6 +632,9 @@ class PageApi:
                     "restored_files": result.get("restored_files"),
                     "skipped_files": result.get("skipped_files"),
                     "safety_backup_id": result.get("safety_backup_id"),
+                    "conflicts": result.get("conflicts"),
+                    "skipped_conflicts": result.get("skipped_conflicts"),
+                    "overwritten": result.get("overwritten"),
                     "operator": self._operator(),
                 }
             )
@@ -616,6 +669,29 @@ class PageApi:
                 )
                 return {"ok": False, "error": message}
             self.store.save(scan)
+
+            if scan.get("suspect_incomplete"):
+                result = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": (
+                        "群/好友列表数量骤降，疑似接口返回不完整，"
+                        "已跳过自动清理；请手动扫描确认后再试"
+                    ),
+                    "candidates": int((scan.get("summary") or {}).get("candidates") or 0),
+                    "deleted": 0,
+                }
+                self.store.append_log(
+                    {
+                        "event": "auto_clean",
+                        "ok": True,
+                        "skipped": True,
+                        "candidates": result["candidates"],
+                        "deleted": 0,
+                        "reason": result["reason"],
+                    }
+                )
+                return result
 
             selected: list[str] = []
             for item in scan.get("targets") or []:
@@ -692,7 +768,7 @@ class PageApi:
     async def _notify_auto_clean(
         self, result: dict[str, Any], test: bool = False
     ) -> dict[str, Any]:
-        if not int(result.get("deleted") or 0):
+        if not test and not int(result.get("deleted") or 0):
             return {"sent": 0, "failed": 0, "reason": "没有删除数据"}
         config = self.plugin.config or {}
         if not cfg_bool(config, "notify.enabled", True):
@@ -780,10 +856,19 @@ class PageApi:
         )
         targets = result.get("targets") or []
         title = "【会话清道夫·测试通知】" if test else "【会话清道夫·自动清理】"
+        if test:
+            return "\n".join(
+                [
+                    title,
+                    "时间：" + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                    "这是一条测试通知，未删除任何数据。",
+                    "通知目标数：" + str(len(targets)),
+                ]
+            )
         return "\n".join(
             [
                 title,
-                "时间：" + datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "时间：" + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 "删除：" + str(int(result.get("deleted") or 0)) + " 行",
                 "会话：" + str(len(targets)) + " 个（已退群）",
                 "明细：" + (detail or "无"),
@@ -917,6 +1002,13 @@ class PageApi:
     def _operator(self) -> str:
         if _request is None:
             return ""
+        # AstrBot 的 PluginRequest 直接暴露 username，没有 Quart 的 .state。
+        try:
+            username = getattr(_request, "username", None)
+            if isinstance(username, str) and username.strip():
+                return username.strip()
+        except Exception:
+            pass
         try:
             state = getattr(_request, "state", None)
             dashboard = getattr(state, "dashboard_g", None)
@@ -1096,21 +1188,56 @@ class PageApi:
             config, "scan.include_provider_stats", False
         )
         whitelist = cfg_list(config, "scan.whitelist", [])
+        previous = self.store.load()
 
         snapshot = await fetch_platform_snapshot(
             self.plugin.context,
             platform_id=platform_id,
             timeout=float(timeout),
         )
+        shrink_warnings = self._list_shrink_warnings(previous, snapshot)
         scanner = Scanner(
             db_path=self.plugin.db_path,
-            platform_id=platform_id,
+            platform_id=snapshot.platform_id or platform_id,
             temp_session_days=temp_days,
             include_provider_stats=include_provider_stats,
             whitelist=whitelist,
         )
         result = await asyncio.to_thread(scanner.scan, snapshot)
-        return result.to_dict()
+        data = result.to_dict()
+        if shrink_warnings:
+            data["warnings"] = list(data.get("warnings") or []) + shrink_warnings
+        data["suspect_incomplete"] = bool(shrink_warnings)
+        return data
+
+    @staticmethod
+    def _list_shrink_warnings(
+        previous: dict[str, Any] | None,
+        snapshot: Any,
+    ) -> list[str]:
+        if not previous:
+            return []
+        old_platform = previous.get("platform") or {}
+        old_id = str(previous.get("platform_id") or "")
+        new_id = str(getattr(snapshot, "platform_id", "") or "")
+        if old_id and new_id and old_id != new_id:
+            return []
+        warnings: list[str] = []
+        checks = (
+            ("群列表", "groups", len(getattr(snapshot, "groups", {}) or {})),
+            ("好友列表", "friends", len(getattr(snapshot, "friends", {}) or {})),
+        )
+        for label, key, new_count in checks:
+            try:
+                old_count = int(old_platform.get(key) or 0)
+            except (TypeError, ValueError):
+                old_count = 0
+            if old_count >= 3 and new_count < old_count * 0.7:
+                warnings.append(
+                    f"{label}从 {old_count} 降到 {new_count}，疑似接口返回不完整；"
+                    "请手动确认后再清理，自动清理会跳过"
+                )
+        return warnings
 
     async def _body(self) -> dict[str, Any]:
         if _request is None:

@@ -305,8 +305,12 @@
     ));
     const note = $("health-note");
     if (note) {
+      const scanTime = scan.available && scan.generated_at
+        ? fmtTime(scan.generated_at)
+        : "尚未扫描";
       note.textContent =
-        "预计可回收按候选行数占核心相关表总行数的比例粗略估算；" +
+        "预计可回收按表平均行长估算（dbstat/列宽），实际以 VACUUM 后为准；" +
+        "行数实时读取，候选与可回收基于上次扫描 " + scanTime + "；" +
         "SQLite 删除行后文件不会自动缩小，需要 VACUUM 才会真正释放磁盘空间（插件不会自动执行）。";
     }
     if (warnings) warningList(warnings, health.warnings || []);
@@ -1054,7 +1058,7 @@
         fmtTime(item.created_at) + (modeLabel ? " · " + modeLabel : "") + (counts ? " · " + counts : "")
       ));
       const safetySnapshot = item.mode === "safety";
-      const rollbackable = !safetySnapshot && item.status !== "restored" && item.status !== "failed";
+      const rollbackable = !safetySnapshot && (item.status === "completed" || item.status === "pending");
       const button = el(
         "button",
         "ghost",
@@ -1207,23 +1211,39 @@
     box.appendChild(download);
   }
 
-  async function rollbackBackup(backupId, button) {
+  async function rollbackBackup(backupId, button, onConflict) {
     setInlineText("rollback-status", "");
-    const confirm = $("rollback-confirm").value.trim();
-    if (confirm !== "确认回滚") {
-      setInlineText("rollback-status", "请输入“确认回滚”四个字", "error");
-      $("rollback-confirm").focus();
-      return;
-    }
-    if (!window.confirm(
-      "确定回滚到备份 " + backupId + " 吗？\n" +
-      "回滚前会自动备份当前数据库；回滚后这份备份不能再次回滚。"
-    )) {
-      return;
+    if (!onConflict) {
+      const confirm = $("rollback-confirm").value.trim();
+      if (confirm !== "确认回滚") {
+        setInlineText("rollback-status", "请输入“确认回滚”四个字", "error");
+        $("rollback-confirm").focus();
+        return;
+      }
+      if (!window.confirm(
+        "确定回滚到备份 " + backupId + " 吗？\n" +
+        "回滚前会自动备份当前数据库；回滚后这份备份不能再次回滚。"
+      )) {
+        return;
+      }
     }
     setBusy(button, true, "回滚中…");
     try {
-      const data = await apiPost("rollback", { backup_id: backupId, confirm: "确认回滚" });
+      const body = { backup_id: backupId, confirm: "确认回滚" };
+      if (onConflict) body.on_conflict = onConflict;
+      const data = await apiPost("rollback", body);
+      if (data && data.requires_confirmation) {
+        const conflicts = data.conflicts || {};
+        const summary = Object.keys(conflicts).map(function (key) {
+          return (TABLE_LABELS[key] || key) + " " + conflicts[key] + " 行";
+        }).join(" / ");
+        const overwrite = window.confirm(
+          "检测到回滚会覆盖同主键的新数据：\n" + (summary || "未知数量") + "\n\n" +
+          "点击“确定”=强制覆盖这些新数据；点击“取消”=跳过冲突行，只恢复其余数据。"
+        );
+        setBusy(button, false, "回滚");
+        return rollbackBackup(backupId, button, overwrite ? "overwrite" : "skip");
+      }
       if (!data.ok) {
         setInlineText("rollback-status", data.error || "回滚失败", "error");
         return;
@@ -1236,6 +1256,16 @@
       }).join(" / ");
       const extra = [];
       if (result.skipped_files) extra.push("跳过旧插件文件 " + result.skipped_files + " 个");
+      if (result.overwritten && Object.keys(result.overwritten).length) {
+        extra.push("覆盖新数据 " + Object.keys(result.overwritten).map(function (key) {
+          return (TABLE_LABELS[key] || key) + " " + result.overwritten[key] + " 行";
+        }).join(" / "));
+      }
+      if (result.skipped_conflicts && Object.keys(result.skipped_conflicts).length) {
+        extra.push("跳过冲突 " + Object.keys(result.skipped_conflicts).map(function (key) {
+          return (TABLE_LABELS[key] || key) + " " + result.skipped_conflicts[key] + " 行";
+        }).join(" / "));
+      }
       if (result.safety_backup_id) extra.push("回滚前备份 " + result.safety_backup_id);
       if (result.safety_warning) extra.push(result.safety_warning);
       setInlineText(
@@ -1283,6 +1313,7 @@
       if (item.targets != null) detail.push("会话 " + item.targets);
       if (item.candidates != null) detail.push("候选 " + item.candidates);
       if (item.deleted != null) detail.push("删除 " + item.deleted + " 行");
+      if (item.operator) detail.push("操作者 " + item.operator);
       if (item.error) detail.push(item.error);
       row.appendChild(el("span", "log-detail", detail.join(" · ")));
       box.appendChild(row);
@@ -1371,23 +1402,30 @@
       const previous = preserve || select.value || current || "default";
       select.replaceChildren();
       const seen = new Set();
-      function add(id, label) {
+      function add(id, label, supported) {
         const value = String(id || "").trim();
         if (!value || seen.has(value)) return;
         seen.add(value);
         const option = document.createElement("option");
         option.value = value;
-        option.textContent = label || value;
+        const suffix = supported === false && !String(label || "").includes("不支持")
+          ? "（不支持）"
+          : "";
+        option.textContent = (label || value) + suffix;
+        option.disabled = supported === false;
         select.appendChild(option);
       }
-      if (current) add(current, current + "（当前配置）");
       detected.forEach(function (item) {
         const id = String((item && item.id) || "").trim();
         const name = String((item && item.name) || id);
-        add(id, name === id ? id : name + "（" + id + "）");
+        const supported = !item || item.supported !== false;
+        add(id, name === id ? id : name + "（" + id + "）", supported);
       });
+      if (current && !seen.has(String(current))) {
+        add(current, current + "（当前配置，未检测到）", false);
+      }
       if (!select.childNodes.length) {
-        add(current || "default", (current || "default") + "（手动）");
+        add(current || "default", (current || "default") + "（手动）", true);
       }
       select.value = seen.has(previous) ? previous : select.childNodes[0].value;
     }
@@ -1402,7 +1440,14 @@
         if (!items.length) {
           setNodeStatus(status, "未检测到平台实例，可继续使用当前值", "error");
         } else {
-          setNodeStatus(status, "已检测 " + items.length + " 个平台实例", "success");
+          const supported = items.filter(function (item) {
+            return !item || item.supported !== false;
+          }).length;
+          setNodeStatus(
+            status,
+            "已检测 " + items.length + " 个平台实例，其中 " + supported + " 个支持 aiocqhttp",
+            supported ? "success" : "error"
+          );
         }
       } catch (error) {
         renderOptions([], select.value || current);

@@ -3,6 +3,9 @@
 体检只读取 `data_v4.db` 的文件大小与 SQLite 页统计，不执行 VACUUM、不删除
 任何数据。删除行之后文件不会自动缩小，真正回收磁盘空间需要额外执行 VACUUM；
 本插件不会自动做这件事，只会把估算值展示给用户。
+
+V0.7.1 起“预计可回收”按表平均行长估算，避免用“行数占比 × 文件大小”把
+provider_stats 这种小行严重高估。
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import JanitorDB
-from .models import TABLE_KEYS
+from .models import CORE_TABLES, TABLE_KEYS
 from .preview import TABLE_LABELS
 from .sqlite_utils import readonly_uri
 
@@ -22,13 +25,15 @@ def human_bytes(value: int | float) -> str:
     """把字节数格式化成便于阅读的字符串。"""
 
     size = float(max(0, int(value or 0)))
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            if unit == "B":
-                return f"{int(size)} B"
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
+    units = ("B", "KB", "MB", "GB", "TB")
+    index = 0
+    # 用 1023.95 作为进位阈值，避免 1023.95 KB 四舍五入成 "1024.0 KB"。
+    while index < len(units) - 1 and size >= 1023.95:
+        size /= 1024.0
+        index += 1
+    if units[index] == "B":
+        return f"{int(round(size))} B"
+    return f"{size:.1f} {units[index]}"
 
 
 def _file_size(path: Path) -> int:
@@ -93,6 +98,8 @@ def _scan_stats(scan: dict[str, Any] | None) -> dict[str, Any]:
             "whitelisted": 0,
         },
         "rows_by_table": {key: 0 for key in TABLE_KEYS},
+        "candidate_rows_by_table": {key: 0 for key in TABLE_KEYS},
+        "default_rows_by_table": {key: 0 for key in TABLE_KEYS},
     }
     if not scan:
         return stats
@@ -115,13 +122,109 @@ def _scan_stats(scan: dict[str, Any] | None) -> dict[str, Any]:
             if rows <= 0:
                 continue
             stats["candidate_rows_total"] += rows
+            stats["candidate_rows_by_table"][table] += rows
             if table == "provider_stats":
                 stats["optional_provider_rows"] += rows
                 continue
             stats["rows_by_table"][table] += rows
             if default_selected:
                 stats["default_rows"] += rows
+                stats["default_rows_by_table"][table] += rows
     return stats
+
+
+def _dbstat_name_bytes(
+    connection: sqlite3.Connection,
+    name: str,
+) -> int | None:
+    try:
+        row = connection.execute(
+            "select sum(pgsize) from dbstat where name = ?", (name,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _dbstat_table_bytes(
+    connection: sqlite3.Connection,
+    table: str,
+) -> int | None:
+    """表页 + 该表索引页的总字节数；比只算表页更接近 VACUUM 后的回收量。"""
+
+    table_bytes = _dbstat_name_bytes(connection, table)
+    if table_bytes is None:
+        return None
+    total = table_bytes
+    try:
+        indexes = connection.execute(f'PRAGMA index_list("{table}")').fetchall()
+    except sqlite3.Error:
+        indexes = []
+    for row in indexes:
+        if len(row) < 2:
+            continue
+        index_bytes = _dbstat_name_bytes(connection, str(row[1]))
+        if index_bytes:
+            total += index_bytes
+    return total
+
+
+def _payload_bytes(connection: sqlite3.Connection, table: str) -> int | None:
+    try:
+        info = connection.execute(f'pragma table_info("{table}")').fetchall()
+        columns = [str(row[1]) for row in info if len(row) > 1]
+        if not columns:
+            return None
+        expression = "+".join(
+            'length(CAST(COALESCE("%s", "") AS BLOB))' % column
+            for column in columns
+        )
+        row = connection.execute(
+            f'select sum({expression}) from "{table}"'
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _table_average_row_bytes(
+    path: Path,
+    table_rows: dict[str, int],
+) -> tuple[dict[str, int], str]:
+    """返回每张表的平均行长（字节/行）及估算方式。"""
+
+    averages: dict[str, int] = {}
+    methods: set[str] = set()
+    if not path.is_file():
+        return averages, ""
+    try:
+        connection = sqlite3.connect(readonly_uri(path), uri=True, timeout=10)
+    except sqlite3.Error:
+        return averages, ""
+    try:
+        for table, rows in table_rows.items():
+            if table not in CORE_TABLES or rows <= 0:
+                continue
+            total = _dbstat_table_bytes(connection, table)
+            method = "dbstat"
+            if not total:
+                total = _payload_bytes(connection, table)
+                method = "payload"
+            if not total:
+                continue
+            averages[table] = max(1, int(total / rows))
+            methods.add(method)
+    finally:
+        connection.close()
+    if not methods:
+        return averages, ""
+    if len(methods) == 1:
+        return averages, methods.pop()
+    return averages, "dbstat+payload"
 
 
 def build_health(
@@ -154,16 +257,33 @@ def build_health(
 
     sqlite_stats = _sqlite_stats(path)
     scan_stats = _scan_stats(scan)
-    delete_rows = scan_stats["default_rows"] + scan_stats["optional_provider_rows"]
+    delete_rows_by_table = {
+        table: int(scan_stats["default_rows_by_table"].get(table) or 0)
+        for table in TABLE_KEYS
+    }
+    delete_rows_by_table["provider_stats"] = int(
+        scan_stats["optional_provider_rows"] or 0
+    )
+    delete_rows = sum(delete_rows_by_table.values())
+    default_rows_by_table = {
+        table: int(scan_stats["default_rows_by_table"].get(table) or 0)
+        for table in TABLE_KEYS
+    }
 
-    def estimate(rows: int) -> int:
-        if not size or not core_rows or rows <= 0:
-            return 0
-        ratio = min(1.0, float(rows) / float(core_rows))
-        return int(size * ratio)
+    averages, average_method = _table_average_row_bytes(
+        path,
+        {key: int(counts.get(key) or 0) for key in TABLE_KEYS},
+    )
 
-    estimated = estimate(delete_rows)
-    estimated_default = estimate(scan_stats["default_rows"])
+    def estimate(rows_by_table: dict[str, int]) -> int:
+        return sum(
+            int(rows) * int(averages.get(table) or 0)
+            for table, rows in rows_by_table.items()
+            if int(rows) > 0
+        )
+
+    estimated = estimate(delete_rows_by_table)
+    estimated_default = estimate(default_rows_by_table)
 
     warnings: list[str] = []
     if not exists:
@@ -179,6 +299,8 @@ def build_health(
             f"候选 {scan_stats['candidates']} 个，但默认可清理 0 行："
             "它们只剩 provider_stats 调用统计；需要清理时勾选“包含 provider_stats”"
         )
+    if exists and delete_rows > 0 and not averages:
+        warnings.append("无法取得核心表行宽，暂时无法估算可回收空间")
     if exists:
         warnings.append(
             "SQLite 删除行后不会自动缩小文件；真正回收磁盘空间需要执行 VACUUM"
@@ -212,11 +334,18 @@ def build_health(
             "delete_rows": delete_rows,
             "default_rows": scan_stats["default_rows"],
             "provider_rows": scan_stats["optional_provider_rows"],
+            "delete_rows_by_table": delete_rows_by_table,
+            "default_rows_by_table": default_rows_by_table,
+            "average_row_bytes": averages,
             "estimated_reclaim_bytes": estimated,
             "estimated_reclaim_human": human_bytes(estimated),
             "estimated_reclaim_default_bytes": estimated_default,
             "estimated_reclaim_default_human": human_bytes(estimated_default),
-            "method": "按候选行数占核心相关表总行数的比例粗略估算",
+            "method": (
+                "按表平均行长估算（dbstat 表页+索引页/行数；无 dbstat 时按列长度总和）"
+                if average_method
+                else "无法取得表行宽，未估算"
+            ),
         },
         "vacuum": {
             "recommended": bool(delete_rows or sqlite_stats["freelist_bytes"]),

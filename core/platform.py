@@ -59,6 +59,16 @@ def _iter_adapters(context: Any) -> list[Any]:
     return unique
 
 
+def _require_aiocqhttp(adapter: Any) -> Any:
+    name = _meta_value(adapter, "name").strip().lower()
+    if name != "aiocqhttp":
+        shown = name or type(adapter).__name__
+        raise PlatformListError(
+            f"当前平台实例是 {shown}，不是 aiocqhttp（OneBot/NapCat），无法读取群列表"
+        )
+    return adapter
+
+
 def find_adapter(context: Any, platform_id: str) -> Any | None:
     target = str(platform_id or "").strip()
 
@@ -66,7 +76,9 @@ def find_adapter(context: Any, platform_id: str) -> Any | None:
         try:
             direct = context.get_platform_inst(target)
             if direct is not None:
-                return direct
+                return _require_aiocqhttp(direct)
+        except PlatformListError:
+            raise
         except Exception:
             pass
 
@@ -74,11 +86,20 @@ def find_adapter(context: Any, platform_id: str) -> Any | None:
     if target:
         for adapter in adapters:
             if _meta_value(adapter, "id") == target:
-                return adapter
-    for adapter in adapters:
-        if _meta_value(adapter, "name") == "aiocqhttp":
-            return adapter
-    return adapters[0] if adapters else None
+                return _require_aiocqhttp(adapter)
+
+    candidates = [
+        adapter
+        for adapter in adapters
+        if _meta_value(adapter, "name").strip().lower() == "aiocqhttp"
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        raise PlatformListError(
+            "检测到多个 aiocqhttp 平台实例，请在设置中明确指定平台 ID"
+        )
+    raise PlatformListError("未找到 aiocqhttp（OneBot/NapCat）平台实例，已停止扫描")
 
 
 def list_platforms(context: Any) -> list[dict[str, Any]]:
@@ -103,6 +124,7 @@ def list_platforms(context: Any) -> list[dict[str, Any]]:
                 "id": platform_id or name,
                 "name": name or platform_id,
                 "source": "adapter",
+                "supported": name.lower() == "aiocqhttp",
             }
         )
     return items
@@ -150,7 +172,9 @@ def _normalize_groups(payload: Any) -> dict[str, str]:
                 payload = payload[key]
                 break
         else:
-            payload = list(payload.values())
+            # 只接受明确的列表字段；错误包（status/retcode/message）不能
+            # 被当成群列表，否则会把失败响应当成一堆伪群号。
+            return {}
 
     groups: dict[str, str] = {}
     if not isinstance(payload, list):
@@ -175,7 +199,7 @@ def _normalize_friends(payload: Any) -> dict[str, str]:
                 payload = payload[key]
                 break
         else:
-            payload = list(payload.values())
+            return {}
 
     friends: dict[str, str] = {}
     if not isinstance(payload, list):
@@ -211,15 +235,30 @@ async def fetch_platform_snapshot(
     friends = _normalize_friends(raw_friends)
     if not groups:
         raise PlatformListError("get_group_list 返回空列表，已停止扫描")
+
+    warnings: list[str] = []
     if not friends:
-        raise PlatformListError("get_friend_list 返回空列表，已停止扫描")
+        # 好友列表为空可能是合法的（新 bot 没有好友），也可能只是接口异常。
+        # 群聊清理不依赖好友列表；私聊会按“好友列表外”处理且默认不勾选，
+        # 因此允许继续，但必须在界面和日志里明确提示。
+        warnings.append(
+            "get_friend_list 返回空列表：私聊会话将全部按好友列表外处理，"
+            "默认不勾选；如确认好友列表不应为空，请先检查平台接口"
+        )
 
     meta_name = _meta_value(adapter, "name") or "aiocqhttp"
     meta_id = _meta_value(adapter, "id")
+    resolved_id = str(meta_id or platform_id or "default")
+    if platform_id and meta_id and str(platform_id) != meta_id:
+        warnings.append(
+            f"配置的平台 ID 是 {platform_id}，实际适配器 ID 是 {meta_id}；"
+            "已按实际适配器 ID 扫描"
+        )
     return PlatformSnapshot(
-        platform_id=str(platform_id or meta_id or "default"),
+        platform_id=resolved_id,
         groups=groups,
         friends=friends,
         captured_at=datetime.now(timezone.utc).isoformat(),
         source=meta_name,
+        warnings=warnings,
     )

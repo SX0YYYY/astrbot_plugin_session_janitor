@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <title>会话清道夫</title>
-  <link rel="stylesheet" href="./style.css?v=0.7.0" />
+  <link rel="stylesheet" href="./style.css?v=0.7.1" />
 </head>
 <body>
   <div class="page">
@@ -14,12 +14,12 @@
         <div class="logo" aria-hidden="true">清</div>
         <div class="brand-text">
           <h1>会话清道夫</h1>
-          <p id="subtitle">数据库体检 / 扫描 / 清理 / 回滚 · V0.7.0</p>
+          <p id="subtitle">数据库体检 / 扫描 / 清理 / 回滚 · V0.7.1</p>
         </div>
       </div>
       <div class="top-actions">
         <span class="inline-status" id="global-status"></span>
-        <span class="pill" id="version">v0.7.0</span>
+        <span class="pill" id="version">v0.7.1</span>
         <button id="scan-btn" class="primary" type="button"
           title="重新读取当前 QQ 群/好友列表并扫描核心库，更新所有标签页的数据。">开始扫描</button>
         <button id="refresh-btn" class="ghost" type="button"
@@ -50,8 +50,9 @@
           </div>
           <div class="metric-grid compact" id="health-metrics"></div>
           <p class="panel-hint" id="health-note">
-            预计可回收按候选行数占核心相关表总行数的比例粗略估算；
-            SQLite 删除行后文件不会自动缩小，需要 VACUUM 才会真正释放磁盘空间。
+            预计可回收按表平均行长估算（dbstat/列宽），实际以 VACUUM 后为准；
+            行数实时读取，候选与可回收基于上次扫描。SQLite 删除行后文件不会自动缩小，
+            需要 VACUUM 才会真正释放磁盘空间。
           </p>
           <div class="toolbar">
             <button id="health-report-btn" class="ghost" type="button"
@@ -307,6 +308,6 @@
     </div>
   </div>
 
-  <script src="./app.js?v=0.7.0" defer></script>
+  <script src="./app.js?v=0.7.1" defer></script>
 </body>
 </html>

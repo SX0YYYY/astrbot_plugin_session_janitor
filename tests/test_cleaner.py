@@ -92,8 +92,32 @@ class CleanerTests(unittest.TestCase):
     def test_rollback_skips_legacy_files(self):
         sample = Path(self.temp.name) / "sample.txt"
         sample.write_text("before", encoding="utf-8")
-        bundle = self.store.create("files", [])
+        bundle = self.store.create("core", [])
+        bundle.add_rows(
+            "umo_aliases",
+            [
+                "created_at",
+                "updated_at",
+                "id",
+                "umo",
+                "creator_sender_id",
+                "auto_name",
+                "user_alias",
+            ],
+            [
+                {
+                    "created_at": "2026-10-22 00:00:00",
+                    "updated_at": "2026-10-22 00:00:00",
+                    "id": 999,
+                    "umo": "default:GroupMessage:999",
+                    "creator_sender_id": "999",
+                    "auto_name": "Legacy Restore",
+                    "user_alias": None,
+                }
+            ],
+        )
         bundle.add_file(sample, "sample.txt")
+        bundle.manifest["status"] = "completed"
         bundle.save()
         sample.unlink()
         result = self.cleaner.rollback(bundle.backup_id)
@@ -102,6 +126,15 @@ class CleanerTests(unittest.TestCase):
         self.assertEqual(result["restored_files"], 0)
         self.assertTrue(result["safety_backup_id"])
         self.assertTrue((self.store.root / result["safety_backup_id"]).is_dir())
+        self.assertEqual(
+            count_rows(
+                self.db,
+                "umo_aliases",
+                "umo = ?",
+                ("default:GroupMessage:999",),
+            ),
+            1,
+        )
 
     def test_backup_id_path_traversal_rejected(self):
         for backup_id in (

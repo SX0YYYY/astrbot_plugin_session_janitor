@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .models import CORE_TABLES
 from .sqlite_utils import readonly_uri
 
 BACKUP_ID_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{6}$")
@@ -126,32 +127,6 @@ class BackupBundle:
             json.dump(self.manifest, handle, ensure_ascii=False, indent=2)
         os.replace(tmp_manifest, self.root / "manifest.json")
 
-    def restore_files(self) -> int:
-        """恢复旧版本备份里的插件文件。
-
-        V0.4 起清理不再备份插件文件，回滚也不会调用本方法；保留它仅用于
-        手动处理旧备份。调用前仍校验相对路径，避免备份包内路径穿越。
-        """
-
-        restored = 0
-        files_root = self.files_dir.resolve()
-        for item in self.files:
-            relative = Path(str(item.get("relative") or ""))
-            if relative.is_absolute() or ".." in relative.parts:
-                continue
-            source = (self.files_dir / relative).resolve()
-            try:
-                source.relative_to(files_root)
-            except ValueError:
-                continue
-            target = Path(item["source"])
-            if not source.is_file():
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-            restored += 1
-        return restored
-
     @staticmethod
     def restore_rows(
         connection: sqlite3.Connection,
@@ -159,24 +134,41 @@ class BackupBundle:
         database: str = "core",
     ) -> dict[str, int]:
         restored: dict[str, int] = {}
+        table_columns: dict[str, set[str]] = {}
         for table, entry in rows.items():
             if entry.get("database", "core") != database:
                 continue
+            table_name = str(table)
             values = entry.get("rows") or []
-            columns = entry.get("columns") or []
+            columns = [str(column) for column in (entry.get("columns") or [])]
             if not values or not columns:
                 continue
+            if table_name not in CORE_TABLES:
+                raise ValueError(f"备份包含非核心表，已拒绝回滚：{table_name}")
+            if table_name not in table_columns:
+                info = connection.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+                table_columns[table_name] = {
+                    str(row[1]) for row in info if len(row) > 1
+                }
+            known = table_columns[table_name]
+            if not known:
+                raise ValueError(f"当前数据库缺少表 {table_name}，无法回滚")
+            unknown = [column for column in columns if column not in known]
+            if unknown:
+                raise ValueError(
+                    "备份与当前表结构不兼容，未知列："
+                    + "、".join(unknown[:10])
+                )
             placeholders = ",".join("?" for _ in columns)
-            sql = 'INSERT OR REPLACE INTO "%s" (%s) VALUES (%s)' % (
-                table,
-                ",".join('"%s"' % column for column in columns),
-                placeholders,
-            )
+            column_sql = ",".join('"%s"' % column for column in columns)
+            sql = f'INSERT OR REPLACE INTO "{table_name}" ({column_sql}) VALUES ({placeholders})'
             payload = []
             for row in values:
                 payload.append(tuple(_restore_value(row.get(column)) for column in columns))
             connection.executemany(sql, payload)
-            restored[table] = len(payload)
+            restored[table_name] = len(payload)
         return restored
 
 
@@ -244,15 +236,17 @@ class BackupStore:
             raise ValueError("备份清单格式不正确")
         if str(manifest.get("backup_id") or "") != text:
             raise ValueError("备份清单与备份 ID 不一致")
-        rows: dict[str, Any] = {}
-        if rows_path.is_file():
-            try:
-                loaded = json.loads(rows_path.read_text(encoding="utf-8"))
-            except ValueError as exc:
-                raise ValueError("备份数据格式不正确") from exc
-            if isinstance(loaded, dict):
-                rows = loaded
-        return manifest, rows
+        if not rows_path.is_file():
+            if manifest.get("mode") == "safety":
+                return manifest, {}
+            raise FileNotFoundError("备份缺少逐行数据 rows.json，无法回滚")
+        try:
+            loaded = json.loads(rows_path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ValueError("备份数据格式不正确") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError("备份数据格式不正确")
+        return manifest, loaded
 
     def mark_restored(
         self,
@@ -260,6 +254,8 @@ class BackupStore:
         restored: dict[str, Any],
         skipped_files: int = 0,
         safety_backup_id: str | None = None,
+        skipped_conflicts: dict[str, int] | None = None,
+        overwritten: dict[str, int] | None = None,
     ) -> None:
         root = self._path(manifest.get("backup_id"))
         manifest["status"] = "restored"
@@ -267,6 +263,10 @@ class BackupStore:
         manifest["restored"] = restored
         manifest["skipped_files"] = int(skipped_files or 0)
         manifest["safety_backup_id"] = safety_backup_id
+        if skipped_conflicts is not None:
+            manifest["skipped_conflicts"] = skipped_conflicts
+        if overwritten is not None:
+            manifest["overwritten"] = overwritten
         tmp = root / "manifest.json.tmp"
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump(manifest, handle, ensure_ascii=False, indent=2)
@@ -280,14 +280,21 @@ class BackupStore:
             for path in sorted(self.root.iterdir(), reverse=True)
             if path.is_dir() and BACKUP_ID_RE.fullmatch(path.name)
         ]
+        restored_paths: list[str] = []
         for path in dirs:
             manifest_path = path / "manifest.json"
             try:
                 data = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict) and data.get("status") in {"restored", "pending"}:
+            if not isinstance(data, dict):
+                continue
+            if data.get("status") == "pending":
                 protected.add(path.name)
+            elif data.get("status") == "restored":
+                restored_paths.append(path.name)
+        # 已回滚备份也按保留份数封顶，避免整库快照无限增长。
+        protected.update(restored_paths[:retain])
         deletable = [path for path in dirs if path.name not in protected]
         for path in deletable[retain:]:
             try:

@@ -14,6 +14,12 @@ from core.config import cfg_bool, cfg_get, cfg_int, cfg_list
 from core.db import JanitorDB, preference_targets
 from core.health import build_health, human_bytes
 from core.models import PlatformSnapshot
+from core.platform import (
+    PlatformListError,
+    _normalize_friends,
+    _normalize_groups,
+    find_adapter,
+)
 from core.preview import build_preview
 from core.scanner import Scanner
 from core.store import ScanStore
@@ -340,6 +346,94 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(human_bytes(0), "0 B")
         self.assertEqual(human_bytes(1024), "1.0 KB")
         self.assertEqual(human_bytes(1024 * 1024), "1.0 MB")
+        self.assertEqual(human_bytes(1024 * 1024 - 1), "1.0 MB")
+
+    def test_estimate_uses_per_table_row_size(self):
+        health = build_health(self.db, self.scan.to_dict())
+        estimate = health["estimate"]
+        self.assertTrue(estimate["method"])
+        self.assertIn("provider_stats", estimate["average_row_bytes"])
+        self.assertIn("conversations", estimate["average_row_bytes"])
+        self.assertGreater(estimate["average_row_bytes"]["provider_stats"], 0)
+        self.assertGreater(estimate["average_row_bytes"]["conversations"], 0)
+
+
+class PlatformParsingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Path(self.temp.name) / "data_v4.db"
+        build_db(self.db)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_error_payload_is_not_a_list(self):
+        payload = {"status": "failed", "retcode": 100, "message": "bad"}
+        self.assertEqual(_normalize_groups(payload), {})
+        self.assertEqual(_normalize_friends(payload), {})
+        self.assertEqual(_normalize_groups({"data": None}), {})
+        self.assertEqual(_normalize_friends({"data": None}), {})
+
+    def test_valid_payload_shapes(self):
+        self.assertEqual(
+            _normalize_groups({"data": [{"group_id": 1, "group_name": "G"}]}),
+            {"1": "G"},
+        )
+        self.assertEqual(
+            _normalize_friends({"data": [{"user_id": 2, "nickname": "F"}]}),
+            {"2": "F"},
+        )
+
+    def test_find_adapter_requires_aiocqhttp(self):
+        class Adapter:
+            def __init__(self, name, id):
+                self._meta = {"name": name, "id": id}
+
+            def meta(self):
+                return self._meta
+
+        class Manager:
+            def __init__(self, adapters):
+                self.platform_insts = adapters
+
+        class Context:
+            def __init__(self, adapters):
+                self.adapters = adapters
+                self.platform_manager = Manager(adapters)
+
+            def get_platform_inst(self, platform_id):
+                for adapter in self.adapters:
+                    if adapter.meta()["id"] == platform_id:
+                        return adapter
+                return None
+
+        webchat = Adapter("webchat", "webchat")
+        bot = Adapter("aiocqhttp", "default")
+        with self.assertRaises(PlatformListError):
+            find_adapter(Context([webchat]), "webchat")
+        self.assertIs(find_adapter(Context([bot]), "default"), bot)
+        self.assertIs(find_adapter(Context([bot]), ""), bot)
+        with self.assertRaises(PlatformListError):
+            find_adapter(Context([bot, Adapter("aiocqhttp", "other")]), "")
+
+    def test_empty_friend_list_is_allowed_with_warning(self):
+        snapshot_empty_friends = PlatformSnapshot(
+            platform_id="default",
+            groups={"111": "Active Group"},
+            friends={},
+            captured_at=NOW.isoformat(),
+            warnings=["好友列表为空测试"],
+        )
+        result = Scanner(
+            self.db,
+            platform_id="default",
+            temp_session_days=30,
+            now=NOW_TS,
+        ).scan(snapshot_empty_friends)
+        targets = {item.umo: item for item in result.targets}
+        self.assertIn("default:FriendMessage:333", targets)
+        self.assertFalse(targets["default:FriendMessage:333"].default_selected)
+        self.assertTrue(any("好友列表为空测试" in item for item in result.warnings))
 
 
 class StoreTests(unittest.TestCase):

@@ -386,6 +386,43 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(again["ok"])
         self.assertIn("已经回滚过", again["error"])
 
+    async def test_rollback_conflict_requires_choice_via_api(self):
+        async def fake_fetch(context, platform_id="default", timeout=10.0):
+            return snapshot()
+
+        page_api_module.fetch_platform_snapshot = fake_fetch
+        fake_request._json = {
+            "targets": ["default:GroupMessage:222"],
+            "confirm": "确认删除",
+            "include_provider_stats": True,
+        }
+        cleaned = await self.api.clean()
+        self.assertTrue(cleaned["ok"])
+        backup_id = cleaned["result"]["backup_id"]
+
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "insert or replace into provider_stats "
+            "(id, umo, provider_model) values (2, 'default:GroupMessage:111', 'NEW')"
+        )
+        con.commit()
+        con.close()
+
+        fake_request._json = {"backup_id": backup_id, "confirm": "确认回滚"}
+        first = await self.api.rollback()
+        self.assertFalse(first["ok"])
+        self.assertTrue(first["requires_confirmation"])
+        self.assertEqual(first["conflicts"], {"provider_stats": 1})
+
+        fake_request._json = {
+            "backup_id": backup_id,
+            "confirm": "确认回滚",
+            "on_conflict": "skip",
+        }
+        second = await self.api.rollback()
+        self.assertTrue(second["ok"])
+        self.assertEqual(second["result"]["skipped_conflicts"], {"provider_stats": 1})
+
     async def test_clean_requires_confirmation(self):
         async def fake_fetch(context, platform_id="default", timeout=10.0):
             return snapshot()
@@ -469,17 +506,60 @@ class PageApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("确认运行", result["error"])
 
+    async def test_operator_uses_plugin_username(self):
+        fake_request.username = "admin"
+        try:
+            self.assertEqual(self.api._operator(), "admin")
+        finally:
+            del fake_request.username
+
+    async def test_list_shrink_warning(self):
+        previous = {
+            "platform_id": "default",
+            "platform": {"groups": 10, "friends": 10},
+        }
+        current = types.SimpleNamespace(
+            platform_id="default",
+            groups={"1": "G"},
+            friends={"2": "F"},
+        )
+        warnings = self.api._list_shrink_warnings(previous, current)
+        self.assertTrue(any("群列表从 10 降到 1" in item for item in warnings))
+        self.assertTrue(any("好友列表从 10 降到 1" in item for item in warnings))
+
+    async def test_settings_rejects_unsupported_platform(self):
+        original = page_api_module.list_platforms
+        page_api_module.list_platforms = lambda context: [
+            {"id": "default", "name": "aiocqhttp", "supported": True},
+            {"id": "webchat", "name": "webchat", "supported": False},
+        ]
+        fake_request._json = {"platform_id": "webchat"}
+        try:
+            result = await self.api.settings_save()
+        finally:
+            page_api_module.list_platforms = original
+        self.assertFalse(result["ok"])
+        self.assertIn("aiocqhttp", result["error"])
+
     async def test_automation_state_persists(self):
+        self.plugin.config["automation"] = {
+            "auto_clean_enabled": True,
+            "scan_interval_minutes": 60,
+            "include_provider_stats": False,
+        }
         first = AutoCleaner(self.plugin, self.api)
         first._last_run = 1234567890.0
         first._last_result = {"ok": True, "skipped": True}
-        first._next_run = time.time() + 3600
+        saved_next = time.time() + 300
+        first._next_run = saved_next
         first._save_state()
 
         second = AutoCleaner(self.plugin, self.api)
         self.assertEqual(second._last_run, 1234567890.0)
         self.assertEqual(second._last_result, {"ok": True, "skipped": True})
+        self.assertEqual(second._state_key, (True, 60))
         self.assertIsNotNone(second._next_run)
+        self.assertAlmostEqual(second._next_run, saved_next, delta=1.0)
         self.assertGreater(second._next_run, time.time())
 
 
